@@ -1,0 +1,3225 @@
+---
+title: "cleanedcomparisons"
+author: "Maxwell Konnaris"
+date: "2025-01-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Documents/pennstate/silvermanlab/mlscale/MLPpredictions_realdata/")
+```
+
+```{r load libraries}
+
+source("R/MLP.R")
+source("R/functions.R")
+
+# Load required libraries
+library(dada2)
+library(tidyverse)
+library(dplyr) 
+library(ggplot2)
+library(vegan)
+library(tibble)
+library(here)
+library(readr)
+library(tidyr)
+library(readxl)
+library(viridis)
+library(scales)
+library(patchwork) 
+library(purrr)
+library(ggtext) 
+library(ggnewscale)
+library(data.table)
+library(ggridges)
+library(reshape2)
+library(stringr)
+library(tidyplots)
+library(ggrepel) 
+library(caret)
+library(ALDEx2)
+library(forcats)  
+library(rlang)
+```
+
+```{r load datasets}
+
+### Load datasheet indices
+datasets <- read.csv(
+  file = "processedandfinalcomparisons/datasets.csv",
+  header = TRUE,
+  sep = ",",
+  stringsAsFactors = FALSE
+)
+
+### 1. Vandeputte 2017 (Measured) - multiple cohorts so need to process..
+trueloads_vandeputte2017 <- read.csv(
+  file = "2017_vandeputte_nature_flow/cellcountstotal.csv",
+  header = TRUE,
+  sep = ",",
+  stringsAsFactors = FALSE
+)
+cohort_list <- unique(trueloads_vandeputte2017$Cohort)
+results <- list()
+for (cohort in cohort_list) {
+  cohort_data <- dplyr::filter(trueloads_vandeputte2017, Cohort == cohort)
+  
+  # Fresh
+  fresh_data <- cohort_data %>%
+    dplyr::filter(!is.na(Average.cell.count..per.gram.of.fresh.feces.)) %>%
+    dplyr::mutate(Sample_ID = paste0(Individual, "_Day", Day)) %>%
+    dplyr::select(Sample_ID, Average.cell.count..per.gram.of.fresh.feces.) %>%
+    dplyr::rename(Cells.mL = Average.cell.count..per.gram.of.fresh.feces.)
+  
+  # Frozen
+  frozen_data <- cohort_data %>%
+    dplyr::filter(!is.na(Average.cell.count..per.gram.of.frozen.feces.)) %>%
+    dplyr::mutate(Sample_ID = paste0(Individual, "_Day", Day)) %>%
+    dplyr::select(Sample_ID, Average.cell.count..per.gram.of.frozen.feces.) %>%
+    dplyr::rename(Cells.mL = Average.cell.count..per.gram.of.frozen.feces.)
+  
+  # Log mean & SD for Fresh
+  fresh_stats <- data.frame(
+    Cohort   = cohort,
+    Type     = "Fresh",
+    Log_Mean = mean(log(fresh_data$Cells.mL), na.rm = TRUE),
+    Log_SD   = sd(log(fresh_data$Cells.mL), na.rm = TRUE),
+    N        = nrow(fresh_data)
+  )
+  # Log mean & SD for Frozen
+  frozen_stats <- data.frame(
+    Cohort   = cohort,
+    Type     = "Frozen",
+    Log_Mean = mean(log(frozen_data$Cells.mL), na.rm = TRUE),
+    Log_SD   = sd(log(frozen_data$Cells.mL), na.rm = TRUE),
+    N        = nrow(frozen_data)
+  )
+  
+  results[[cohort]] <- dplyr::bind_rows(fresh_stats, frozen_stats)
+}
+
+combined_results <- bind_rows(results) %>% filter(N > 0)
+trueloads_vandeputte2017 <- combined_results %>%
+  mutate(Combined = paste0("Vandeputte2017_", Cohort, "_", Type))
+
+#assign(paste0(tolower(gsub(" ", "_","vandeputte2017")), "_Measured"), frozen_data, envir = .GlobalEnv)
+```
+
+```{r Load Datasets}
+
+try(metadata_loading(datasets), silent = FALSE)
+load_microbialload_dataset(datasets)
+convert_datasets(datasets, removal=FALSE)
+studies <- build_list(datasets)
+
+```
+
+```{r Results}
+
+load_data_list <- list()
+
+for (dataset_name in names(studies)) {
+  dataset <- studies[[dataset_name]]
+  if (!is.null(dataset$measured_load_df) && "MeasuredLoad" %in% colnames(dataset$measured_load_df)) {
+    temp <- data.frame(
+      Dataset = dataset_name,
+      Source  = "Measured",
+      Load    = dataset$measured_load_df$MeasuredLoad
+    )
+    load_data_list[[length(load_data_list) + 1]] <- temp
+  }
+  if (!is.null(dataset$predicted_load_df) && "PredictedLoad" %in% colnames(dataset$predicted_load_df)) {
+    temp <- data.frame(
+      Dataset = dataset_name,
+      Source  = "Predicted (Vandeputte2021)",
+      Load    = dataset$predicted_load_df$PredictedLoad
+    )
+    load_data_list[[length(load_data_list) + 1]] <- temp
+  }
+  if (!is.null(dataset$galaxypredicted_load_df) && "PredictedLoad" %in% colnames(dataset$galaxypredicted_load_df)) {
+    temp <- data.frame(
+      Dataset = dataset_name,
+      Source  = "Predicted (GALAXY)",
+      Load    = dataset$galaxypredicted_load_df$PredictedLoad
+    )
+    load_data_list[[length(load_data_list) + 1]] <- temp
+  }
+  
+  if (!is.null(dataset$metacardispredicted_load_df) && "PredictedLoad" %in% colnames(dataset$metacardispredicted_load_df)) {
+    temp <- data.frame(
+      Dataset = dataset_name,
+      Source  = "Predicted (MetaCardis)",
+      Load    = dataset$metacardispredicted_load_df$PredictedLoad
+    )
+    load_data_list[[length(load_data_list) + 1]] <- temp
+  }
+}
+
+combined_load_data <- bind_rows(load_data_list)
+
+summarystats <- combined_load_data %>%
+  mutate(Label = ifelse(grepl("Predicted", Source), "Predicted", "Measured")) %>%
+  group_by(Dataset, Source, Label) %>%
+  summarize(
+    N    = n(),
+    Mean = mean(Load, na.rm = TRUE),
+    SD   = sd(Load, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# View the summary statistics dataframe
+print(summarystats)
+
+
+
+### PLOTTING
+
+# Define color scheme
+source_colors <- c(
+  "Measured" = "#929292",
+  "Predicted (GALAXY)" = "#0C58CA",
+  "Predicted (MetaCardis)" = "#FF8C27", 
+  "Predicted (Vandeputte2021)" = "#000000"
+)
+
+# Define the custom theme
+tidyplot_theme <- function(base_size = 10) {  
+  theme_minimal(base_size = base_size) +
+    theme(
+      text = element_text(family = "Arial", color = "black"),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5, 
+                                margin = margin(b = 5)),
+      axis.title.x = element_text(margin = margin(t = 10), hjust = 0.5),  
+      axis.title.y = element_text(margin = margin(r = 10), hjust = 0.5), 
+      axis.title = element_text(size = 14, face = "plain"),
+      axis.text = element_text(size = 12, color = "black"),
+      axis.line = element_line(linewidth = 0.5, color = "black"),
+      axis.ticks.length = unit(0.25, "cm"),  
+      axis.ticks = element_line(linewidth = 0.5, color = "black"),
+      panel.grid = element_blank(),
+      panel.border = element_blank(),
+      plot.margin = unit(c(1, 1, 1, 1), "cm"),
+      legend.position = "top",
+      legend.title = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA)
+    )
+}
+
+###### Variance comparison
+
+# Create exactly three reference lines (one per prediction method)
+reference_lines <- summarystats %>%
+  filter(Source == "Measured") %>%
+  filter(Dataset %in% c("GALAXY (MLP Training data)", 
+                       "MetaCardis (MLP Training data)", 
+                       "Vandeputte2021 (MLP Training data)")) %>%
+  mutate(
+    PredictionType = case_when(
+      Dataset == "GALAXY (MLP Training data)" ~ "Predicted (GALAXY)",
+      Dataset == "MetaCardis (MLP Training data)" ~ "Predicted (MetaCardis)",
+      Dataset == "Vandeputte2021 (MLP Training data)" ~ "Predicted (Vandeputte2021)",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Split studies into groups based on their prediction types
+study_types <- summarystats %>%
+  group_by(Dataset) %>%
+  summarize(
+    has_galaxy = any(Source == "Predicted (GALAXY)"),
+    has_metacardis = any(Source == "Predicted (MetaCardis)"),
+    has_vandeputte = any(Source == "Predicted (Vandeputte2021)"),
+    .groups = "drop"
+  )
+
+# Get study lists for each panel (including all their data points)
+galaxy_meta_studies <- study_types %>%
+  filter(has_galaxy | has_metacardis) %>%
+  pull(Dataset)
+
+vandeputte_studies <- study_types %>%
+  filter(has_vandeputte) %>%
+  pull(Dataset)
+
+# Top panel - GALAXY & MetaCardis studies
+top_plot <- ggplot(
+  summarystats %>% filter(Dataset %in% galaxy_meta_studies),
+  aes(y = fct_rev(Dataset), x = SD, color = Source)
+) +
+  # Add reference lines for this panel
+  geom_vline(
+    data = reference_lines %>% filter(PredictionType %in% c("Predicted (GALAXY)", "Predicted (MetaCardis)")),
+    aes(xintercept = SD, color = PredictionType),
+    linetype = "dashed",
+    linewidth = 0.8,
+    alpha = 0.6,
+    show.legend = FALSE
+  ) +
+  geom_point(size = 3.5, alpha = 0.9, shape = 16) +
+  scale_color_manual(values = source_colors) +
+  labs(title = " ", y = "Shotgun Metagenomics", x = NULL) +
+  tidyplot_theme() +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3)
+  ) +
+  scale_x_continuous(
+    breaks = seq(floor(min(summarystats$SD, na.rm = TRUE)*4)/4,
+             ceiling(max(summarystats$SD, na.rm = TRUE)*4)/4,
+             by = 0.25),
+    limits = range(summarystats$SD, na.rm = TRUE)
+  )
+
+# Bottom panel - Vandeputte studies
+bottom_plot <- ggplot(
+  summarystats %>% filter(Dataset %in% vandeputte_studies),
+  aes(y = fct_rev(Dataset), x = SD, color = Source)
+) +
+  # Add reference line for this panel
+  geom_vline(
+    data = reference_lines %>% filter(PredictionType == "Predicted (Vandeputte2021)"),
+    aes(xintercept = SD, color = PredictionType),
+    linetype = "dashed",
+    linewidth = 0.8,
+    alpha = 0.6,
+    show.legend = FALSE
+  ) +
+  geom_point(size = 3.5, alpha = 0.9, shape = 16) +
+  scale_color_manual(values = source_colors) +
+  labs(
+    title = " ",
+    y = "16S rRNA Amplicon",
+    x = expression(paste("Standard Deviation (", log[10], "(Microbial Load))"))
+  ) +
+  tidyplot_theme() +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3)
+  ) +
+  scale_x_continuous(
+    breaks = seq(floor(min(summarystats$SD, na.rm = TRUE)*4)/4,
+             ceiling(max(summarystats$SD, na.rm = TRUE)*4)/4,
+             by = 0.25),
+    limits = range(summarystats$SD, na.rm = TRUE)
+  )
+
+# First, modify both plots to include the legend (we'll control it later)
+top_plot <- top_plot + 
+  theme(legend.position = "none")  # Hide legend in top plot
+
+bottom_plot <- bottom_plot + 
+  theme(legend.position = "none")  # Hide legend in bottom plot
+
+# Combine plots with shared legend
+combined_plot <- (top_plot / bottom_plot) + 
+  plot_layout(guides = "collect") &
+  theme(legend.position = "top")
+
+# Save with proper dimensions
+ggsave("plots/variance_comparison.png",
+       combined_plot,
+       width = 14, 
+       height = 6 + length(galaxy_meta_studies)*0.2 + length(vandeputte_studies)*0.2,  # Dynamic height
+       dpi = 600, 
+       bg = "white")
+
+
+## Ridge
+
+plot_data <- list()
+for (dataset_name in names(studies)) {
+  dataset <- studies[[dataset_name]]
+  if (!is.null(dataset$measured_load_df) && "MeasuredLoad" %in% colnames(dataset$measured_load_df)) {
+    measured_data <- data.frame(
+      Load = dataset$measured_load_df$MeasuredLoad, 
+      Source = "Measured", 
+      Dataset = dataset_name
+    )
+    plot_data <- append(plot_data, list(measured_data))
+  }
+  if (!is.null(dataset$predicted_load_df) && "PredictedLoad" %in% colnames(dataset$predicted_load_df)) {
+    predicted_data <- data.frame(
+      Load = dataset$predicted_load_df$PredictedLoad, 
+      Source = "Predicted (Vandeputte2021)", 
+      Dataset = dataset_name
+    )
+    plot_data <- append(plot_data, list(predicted_data))
+  }
+  if (!is.null(dataset$galaxypredicted_load_df) && "PredictedLoad" %in% colnames(dataset$galaxypredicted_load_df)) {
+    predicted_data_galaxy <- data.frame(
+      Load = dataset$galaxypredicted_load_df$PredictedLoad, 
+      Source = "Predicted (GALAXY)", 
+      Dataset = dataset_name
+    )
+    plot_data <- append(plot_data, list(predicted_data_galaxy))
+  }
+  if (!is.null(dataset$metacardispredicted_load_df) && "PredictedLoad" %in% colnames(dataset$metacardispredicted_load_df)) {
+    predicted_data_metacardis <- data.frame(
+      Load = dataset$metacardispredicted_load_df$PredictedLoad, 
+      Source = "Predicted (MetaCardis)", 
+      Dataset = dataset_name
+    )
+    plot_data <- append(plot_data, list(predicted_data_metacardis))
+  }
+}
+plot_data <- bind_rows(plot_data)
+
+# Determine study groups based on available prediction sources
+study_groups <- plot_data %>%
+  distinct(Dataset, Source) %>%
+  group_by(Dataset) %>%
+  summarize(
+    has_galaxy = any(Source == "Predicted (GALAXY)"),
+    has_metacardis = any(Source == "Predicted (MetaCardis)"),
+    has_vandeputte = any(Source == "Predicted (Vandeputte2021)"),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    group = case_when(
+      has_galaxy | has_metacardis ~ "Shotgun",
+      has_vandeputte ~ "16S",
+      TRUE ~ "Other"
+    )
+  )
+
+# Create ordered factor levels
+study_order <- study_groups %>%
+  arrange(group, Dataset) %>%  # Sort by group then by dataset name
+  pull(Dataset)
+
+plot_data <- plot_data %>%
+  mutate(
+    Dataset = factor(Dataset, levels = rev(study_order)),  # Reverse for top-to-bottom ordering
+    StudyType = ifelse(Dataset %in% study_groups$Dataset[study_groups$group == "Shotgun"], 
+                      "Shotgun Metagenomics", "16S rRNA")
+  )
+
+# Normalize the load values
+plot_data <- plot_data %>%
+  group_by(Dataset) %>%
+  mutate(Load = (Load - min(Load, na.rm = TRUE)) / (max(Load, na.rm = TRUE) - min(Load, na.rm = TRUE))) %>%
+  ungroup()
+
+# Define colors using the provided palette
+# source_colors <- c(
+#   "Measured" = "#929292",         
+#   "Predicted (GALAXY)" = "#E66800",
+#   "Predicted (MetaCardis)" = "#8B28E2", 
+#   "Predicted (Vandeputte2021)" = "#1D4779" 
+# )
+
+source_colors <- c(
+  "Measured" = "#929292",
+  "Predicted (GALAXY)" = "#0C58CA",
+  "Predicted (MetaCardis)" = "#FF8C27", 
+  "Predicted (Vandeputte2021)" = "#000000"
+)
+
+# First, create separate data frames for each study type
+shotgun_data <- plot_data %>% filter(StudyType == "Shotgun Metagenomics")
+rrna_data <- plot_data %>% filter(StudyType == "16S rRNA")
+
+# Modify the plotting function to allow custom y-axis labels
+create_ridge_plot <- function(data, title, show_x_axis = TRUE, y_label = "Dataset") {
+  p <- ggplot(data, aes(x = Load, y = Dataset, fill = Source)) +
+    geom_density_ridges(alpha = 0.8, scale = 1.3, rel_min_height = 0.01) +
+    scale_fill_manual(values = source_colors) +
+    labs(
+      title = title,
+      x = if(show_x_axis) expression(paste("Min-max scaled ", log[10], "(microbial load)")) else NULL,
+      y = y_label,
+      fill = "Model:"
+    ) +
+    tidyplot_theme() +
+    scale_x_continuous(expand = expansion(mult = c(0.01, 0.01))) +
+    scale_y_discrete(expand = expansion(mult = c(0.05, 0.05)))
+  
+  if(!show_x_axis) {
+    p <- p + theme(
+      axis.title.x = element_blank()
+    )
+  }
+  
+  return(p)
+}
+
+# Create plots with custom y-axis labels
+shotgun_plot <- create_ridge_plot(
+  shotgun_data, 
+  title = " ",
+  show_x_axis = FALSE,
+  y_label = "Shotgun Metagenomics Dataset"
+)
+
+rrna_plot <- create_ridge_plot(
+  rrna_data, 
+  title = " ",
+  show_x_axis = TRUE,
+  y_label = "16S rRNA Amplicon Dataset"
+)
+
+
+# Combine plots with shared legend and adjusted spacing
+combined_plot <- (shotgun_plot / rrna_plot) + 
+  plot_layout(
+    guides = "collect",
+    heights = c(nlevels(shotgun_data$Dataset), nlevels(rrna_data$Dataset))
+  ) &
+  theme(legend.position = "top")
+
+# Add a small margin between plots (negative value brings them closer)
+combined_plot <- combined_plot & 
+  plot_layout(tag_level = 'new') &
+  theme(
+    plot.margin = margin(t = 10, r = 15, b = 10, l = 10)  # Adjust bottom margin to -10 to bring plots closer
+  )
+
+# Save the combined plot
+ggsave("plots/ridgedistributions_stacked.png", combined_plot, 
+       width = 12, height = 10, dpi = 600, bg = 'white')
+
+
+all_predictions <- map_dfr(names(studies), function(study_name) {
+  get_predictions(study_name, studies, datasets)
+})
+
+
+all_predictions <- all_predictions %>%
+  dplyr::mutate(`Predicted Load Rounded` = round(PredictedLoad, digits = 2))
+
+frequency_data <- all_predictions %>%
+  group_by(Study, Model, `Predicted Load Rounded`) %>%
+  summarise(Frequency = n(), .groups = "drop")
+
+ggplot(frequency_data, aes(x = `Predicted Load Rounded`, y = Frequency, fill = Study)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ Model, scales = "free_x") +
+  labs(title = "Comparative Frequency of Predicted Load Values",
+       x = "Predicted Load (Rounded)",
+       y = "Count") +
+  theme_minimal()
+
+
+all_predictions |>
+  tidyplot(x = PredictedLoad, color = Model) |>
+  add_histogram(bins=100)|>
+  adjust_x_axis(rotate_labels = TRUE) |>
+  add_title("Comparative Frequency of Predicted Load Values") |>
+  split_plot(by = Study) |> 
+  save_plot('prediction_histograms.png')
+
+
+#Studies with measured load from now on..
+studies <- studies[!sapply(studies, function(study) is.null(study$measured_load_df))]
+
+```
+
+```{r Model features}
+
+library(caret)    
+
+rdpclassifier = readRDS("microbial_load_predictor/data/16S_rRNA/model.16S_rRNA.rds")
+rdpclassifierfeatures = names(rdpclassifier$trainingData)
+
+galaxymotus25 = readRDS("microbial_load_predictor/data/galaxy/model.motus25.rds")
+galaxymotus25features = names(galaxymotus25$trainingData)
+
+galaxymotus3 = readRDS("microbial_load_predictor/data/galaxy/model.motus3.rds")
+galaxymotus3features = names(galaxymotus3$trainingData)
+
+galaxymetaphlan3 = readRDS("microbial_load_predictor/data/galaxy/model.metaphlan3.rds")
+galaxymetaphlan3features = names(galaxymetaphlan3$trainingData)
+
+galaxymetaphlan4 = readRDS("microbial_load_predictor/data/galaxy/model.metaphlan4.rds")
+galaxymetaphlan4features = names(galaxymetaphlan4$trainingData)
+
+metacardismotus25 = readRDS("microbial_load_predictor/data/metacardis/model.motus25.rds")
+metacardismotus25features = names(metacardismotus25$trainingData)
+
+metacardismotus3 = readRDS("microbial_load_predictor/data/metacardis/model.motus3.rds")
+metacardismotus3features = names(metacardismotus3$trainingData)
+
+metacardismetaphlan3 = readRDS("microbial_load_predictor/data/metacardis/model.metaphlan3.rds")
+metacardismetaphlan3features = names(metacardismetaphlan3$trainingData)
+
+metacardismetaphlan4 = readRDS("microbial_load_predictor/data/metacardis/model.metaphlan4.rds")
+metacardismetaphlan4features = names(metacardismetaphlan4$trainingData)
+
+originalfeatures = list("metacardismetaphlan4features" = metacardismetaphlan4features,
+                        "metacardismetaphlan3features" = metacardismetaphlan3features,
+                        "metacardismotus3features" = metacardismotus3features,
+                        "metacardismotus25features" = metacardismotus25features,
+                        "galaxymetaphlan4features" = galaxymetaphlan4features,
+                        "galaxymetaphlan3features" = galaxymetaphlan3features,
+                        "galaxymotus3features" = galaxymotus3features,
+                        "galaxymotus25features" = galaxymotus25features,
+                        "rdpclassifierfeatures" = rdpclassifierfeatures)
+
+
+feature_counts <- tibble(
+  Model = c(
+    "Vandeputte RDP Classifier", "GALAXY MOTUs 2.5", "GALAXY MOTUs 3", 
+    "GALAXY MetaPhlAn 3", "GALAXY MetaPhlAn 4",
+    "MetaCardis MOTUs 2.5", "MetaCardis MOTUs 3", 
+    "MetaCardis MetaPhlAn 3", "MetaCardis MetaPhlAn 4"
+  ),
+  `Number of Features Used for Training` = c(
+    length(rdpclassifierfeatures), length(galaxymotus25features), length(galaxymotus3features),
+    length(galaxymetaphlan3features), length(galaxymetaphlan4features),
+    length(metacardismotus25features), length(metacardismotus3features),
+    length(metacardismetaphlan3features), length(metacardismetaphlan4features)
+  )
+)
+
+feature_counts |> 
+  tidyplot(x = `Number of Features Used for Training`, y = Model, width=65) |> 
+  add_sum_bar() |> 
+  add_sum_value() |> 
+  sort_y_axis_labels() |>
+  save_plot("modelfeaturescompared.png", bg="white", dpi=600, width = 5,
+  height = 5,
+  units = c("in"))
+
+rdpclassifierfeatures <- remove_unwanted_features(rdpclassifierfeatures)
+galaxymotus25features <- remove_unwanted_features(galaxymotus25features)
+galaxymotus3features <- remove_unwanted_features(galaxymotus3features)
+galaxymetaphlan3features <- remove_unwanted_features(galaxymetaphlan3features)
+galaxymetaphlan4features <- remove_unwanted_features(galaxymetaphlan4features)
+metacardismotus25features <- remove_unwanted_features(metacardismotus25features)
+metacardismotus3features <- remove_unwanted_features(metacardismotus3features)
+metacardismetaphlan3features <- remove_unwanted_features(metacardismetaphlan3features)
+metacardismetaphlan4features <- remove_unwanted_features(metacardismetaphlan4features)
+
+inspect_model <- function(model_path, model_name) {
+  model <- readRDS(model_path)
+  grid_results <- model$results
+  grid_ranges <- list(
+    nrounds = unique(grid_results$nrounds),
+    max_depth = unique(grid_results$max_depth),
+    eta = unique(grid_results$eta),
+    gamma = unique(grid_results$gamma),
+    colsample_bytree = unique(grid_results$colsample_bytree),
+    min_child_weight = unique(grid_results$min_child_weight),
+    subsample = unique(grid_results$subsample)
+  )
+  num_features <- length(model$finalModel$feature_names)
+  cv_control <- model$control
+  cat("\n--- Summary for:", model_name, "---\n")
+  cat("Grid Search Ranges:\n")
+  cat("  nrounds:", paste(grid_ranges$nrounds, collapse = ", "), "\n")
+  cat("  max_depth:", paste(grid_ranges$max_depth, collapse = ", "), "\n")
+  cat("  eta:", paste(grid_ranges$eta, collapse = ", "), "\n")
+  cat("  gamma:", paste(grid_ranges$gamma, collapse = ", "), "\n")
+  cat("  colsample_bytree:", paste(grid_ranges$colsample_bytree, collapse = ", "), "\n")
+  cat("  min_child_weight:", paste(grid_ranges$min_child_weight, collapse = ", "), "\n")
+  cat("  subsample:", paste(grid_ranges$subsample, collapse = ", "), "\n")
+  cat("Number of Features:", num_features, "\n")
+  cat("CV Setup:", cv_control$method, "with", cv_control$number, "folds,", cv_control$repeats, "repeats\n")
+  return(list(
+    name = model_name,
+    grid_ranges = grid_ranges,
+    num_features = num_features,
+    control = cv_control
+  ))
+}
+
+model_insights <- list()
+model_insights[["16S_rRNA"]] <- inspect_model(
+  "microbial_load_predictor/data/16S_rRNA/model.16S_rRNA.rds", 
+  "16S_rRNA (RDP Classifier)"
+)
+
+model_insights[["galaxy_motus25"]] <- inspect_model(
+  "microbial_load_predictor/data/galaxy/model.motus25.rds", 
+  "Galaxy mOTUs v2.5"
+)
+
+model_insights[["galaxy_motus3"]] <- inspect_model(
+  "microbial_load_predictor/data/galaxy/model.motus3.rds", 
+  "Galaxy mOTUs v3.0"
+)
+
+model_insights[["galaxy_metaphlan3"]] <- inspect_model(
+  "microbial_load_predictor/data/galaxy/model.metaphlan3.rds", 
+  "Galaxy MetaPhlAn v3"
+)
+
+model_insights[["galaxy_metaphlan4"]] <- inspect_model(
+  "microbial_load_predictor/data/galaxy/model.metaphlan4.rds", 
+  "Galaxy MetaPhlAn v4"
+)
+
+model_insights[["metacardis_motus25"]] <- inspect_model(
+  "microbial_load_predictor/data/metacardis/model.motus25.rds", 
+  "MetaCardis mOTUs v2.5"
+)
+
+model_insights[["metacardis_motus3"]] <- inspect_model(
+  "microbial_load_predictor/data/metacardis/model.motus3.rds", 
+  "MetaCardis mOTUs v3.0"
+)
+
+model_insights[["metacardis_metaphlan3"]] <- inspect_model(
+  "microbial_load_predictor/data/metacardis/model.metaphlan3.rds", 
+  "MetaCardis MetaPhlAn v3"
+)
+
+model_insights[["metacardis_metaphlan4"]] <- inspect_model(
+  "microbial_load_predictor/data/metacardis/model.metaphlan4.rds", 
+  "MetaCardis MetaPhlAn v4"
+)
+
+rm(list = grep("^rdpclassifier|^galaxymotus|^galaxymetaphlan|^metacardismotus|^metacardismetaphlan", 
+               ls(), 
+               value = TRUE)[!grepl("features", 
+                                   grep("^rdpclassifier|^galaxymotus|^galaxymetaphlan|^metacardismotus|^metacardismetaphlan", 
+                                        ls(), 
+                                        value = TRUE))])
+```
+
+
+```{r helper functions for feature importance}
+
+# R^2 correlation between predicted and measured load
+r2_results <- lapply(names(studies), function(dn) {
+  compute_r2(
+    study_data = studies[[dn]],
+    study_name = dn,
+    datasets   = datasets
+  )
+})
+names(r2_results) <- names(studies)
+
+
+result_list <- build_and_process_features(datasets = datasets, studies = studies)
+  
+allfeatures = result_list$all_features
+allfeatures <- allfeatures %>%
+  left_join(
+    datasets %>%
+      dplyr::filter(source_type == "Predicted") %>%  # Keep only rows where source_type == "Predicted"
+      dplyr::arrange(dataset_name) %>%  # Ensure proper order before selecting the first row per Study
+      group_by(dataset_name) %>% 
+      slice(1) %>%  # Select the first row per dataset_name (Study equivalent)
+      ungroup() %>%
+      dplyr::select(dataset_name, classifier, loadtype, sequencingtype, organismtype, sampletype, source_type),  # Keep only relevant columns
+    by = c("Study" = "dataset_name")
+  )
+
+priority_studies <- c("Vandeputte2021 (MLP Training data)", 
+                      "GALAXY (MLP Training data)", 
+                      "MetaCardis (MLP Training Data)")
+allfeatures <- allfeatures %>%
+  dplyr::mutate(priority = ifelse(Study %in% priority_studies, match(Study, priority_studies), Inf)) %>%
+  dplyr::arrange(priority) %>%
+  dplyr::select(-priority)
+allfeatures <- allfeatures %>%
+  dplyr::mutate(Study = factor(Study, levels = c(priority_studies, setdiff(unique(Study), priority_studies))))
+allfeatures <- allfeatures %>%
+  dplyr::mutate(Study = factor(Study, levels = c(priority_studies, setdiff(unique(Study), priority_studies))))
+
+numeric_cols <- allfeatures %>%
+  dplyr::select(where(is.numeric)) %>%
+  colnames()
+
+longdf <- allfeatures %>%
+  dplyr::select(Study, Reference, classifier, loadtype, sequencingtype, organismtype, sampletype, all_of(numeric_cols)) %>%
+  pivot_longer(
+    cols = -c(Study, Reference, classifier, loadtype, sequencingtype, organismtype, sampletype),
+    names_to = "Feature",
+    values_to = "FeatureValue"
+  )
+
+# Store in result_list
+result_list$all_features <- allfeatures
+result_list$long_df <- longdf
+
+
+
+result_dfs <- prepare_plotting_dataframes(
+  cor_results = result_list$cor_results,
+  r2_results  = r2_results,
+  studies     = studies,
+  datasets = datasets
+)
+
+correlation_df     <- result_dfs$correlation_df
+non_correlation_df <- result_dfs$non_correlation_df
+r2_df              <- result_dfs$r2_df
+selected_df        <- result_dfs$selected_df
+demo_df            <- result_dfs$demo_df
+numeric_df_clean   <- result_dfs$numeric_df_clean
+categorical_df     <- result_dfs$categorical_df
+
+
+# ---- Step 1: Classify metric types
+df_classified <- r2_df %>%
+  mutate(
+    metric_class = case_when(
+      Metric == "r2" ~ "r2",
+      str_detect(Metric, "GALAXY R²") ~ "r2_galaxy",
+      str_detect(Metric, "MetaCardis R²") ~ "r2_metacardis",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(metric_class))
+
+# ---- Step 2: Metric-specific filtering (like before)
+metric_specific_exclude <- list(
+  r2 = "Vandeputte2021 \\(MLP Training data\\)",
+  r2_galaxy = "GALAXY \\(MLP Training data\\)",
+  r2_metacardis = "MetaCardis \\(MLP Training data\\)"
+)
+
+df_metric_filtered <- df_classified %>%
+  rowwise() %>%
+  filter(!(metric_class == "r2" & Study == metric_specific_exclude$r2),
+         !(metric_class == "r2_galaxy" & Study == metric_specific_exclude$r2_galaxy),
+         !(metric_class == "r2_metacardis" & Study == metric_specific_exclude$r2_metacardis)) %>%
+  ungroup()
+
+# ---- Step 3: Full exclusion based on list
+hard_exclude_patterns <- paste0("^(", paste(unlist(exclude_conditions), collapse = "|"), ")$")
+
+df_fully_filtered <- df_classified %>%
+  filter(!str_detect(Study, hard_exclude_patterns))
+
+# ---- Step 4: Summary function
+summarise_r2_metrics <- function(df) {
+  summary_by_metric <- df %>%
+    group_by(metric_class) %>%
+    summarise(
+      N = sum(!is.na(as.numeric(Value))),
+      Mean = mean(as.numeric(Value), na.rm = TRUE),
+      SD = sd(as.numeric(Value), na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  summary_combined <- df %>%
+    summarise(
+      N = sum(!is.na(as.numeric(Value))),
+      Mean = mean(as.numeric(Value), na.rm = TRUE),
+      SD = sd(as.numeric(Value), na.rm = TRUE)
+    ) %>%
+    mutate(metric_class = "combined") %>%
+    dplyr::select(metric_class, N, Mean, SD)
+  
+  bind_rows(summary_by_metric, summary_combined)
+}
+
+
+# ---- Step 5: Run summaries
+summary_metric_filtered <- summarise_r2_metrics(df_metric_filtered)
+summary_fully_filtered <- summarise_r2_metrics(df_fully_filtered)
+
+print("Metric-specific filtered:")
+print(summary_metric_filtered)
+
+print("Fully excluded studies:")
+print(summary_fully_filtered)
+
+
+
+# 
+# # For overlapping taxa
+# filtered_longdf <- longdf %>%
+#   dplyr::filter(Feature %in% c("Taxa >0 (Sample ∩ Training Study)", "Taxa >0 (Sample ∩ MLP Features)")) %>%
+#   dplyr::mutate(FeatureValue = FeatureValue) %>%
+#   dplyr::mutate(Study = str_replace(Study, " \\(MLP Training data\\)", ""))
+# 
+# plot_studyfeatures_grouped(
+#   filtered_longdf, 
+#   feature = FeatureValue,  
+#   "plots/presenttaxafoundintraining.png", 
+#   scalemeasurement = Feature
+# )
+# 
+# # For non-overlapping taxa
+# filtered_longdf <- longdf %>%
+#   dplyr::filter(Feature %in% c("Taxa >0 (Sample ∉ Training Study)", "Taxa >0 (Sample ∉ MLP Features)")) %>%
+#   dplyr::mutate(FeatureValue = FeatureValue) %>%
+#   dplyr::mutate(Study = str_replace(Study, " \\(MLP Training data\\)", ""))
+# plot_studyfeatures_grouped(
+#   filtered_longdf, 
+#   feature = FeatureValue,  
+#   "plots/presenttaxanotfoundintraining.png", 
+#   scalemeasurement = Feature
+# )
+# 
+# 
+# # For sparsity features
+# filtered_longdf <- longdf %>%
+#   dplyr::filter(Feature %in% c("Sample Taxa Sparsity", "Sample ∩ MLP Feature Sparsity")) %>%
+#   dplyr::mutate(FeatureValue = FeatureValue) %>%
+#   dplyr::mutate(Study = str_replace(Study, " \\(MLP Training data\\)", ""))
+# plot_studyfeatures_grouped(
+#   filtered_longdf, 
+#   feature = FeatureValue,  
+#   "plots/samplesparsity.png", 
+#   scalemeasurement = Feature
+# )
+
+# filtered_longdf <- longdf %>%
+#   dplyr::filter(Feature %in% c("Observed")) %>%
+#   dplyr::mutate(Study = str_replace(Study, " \\(MLP Training data\\)", ""))
+# plot_studyfeatures(filtered_longdf, feature = FeatureValue, "plots/observed.png", scalemeasurement = loadtype)
+# 
+# filtered_longdf <- longdf %>%
+#   dplyr::filter(Feature %in% c("Shannon")) %>%
+#   dplyr::mutate(Study = str_replace(Study, " \\(MLP Training data\\)", ""))
+# plot_studyfeatures(filtered_longdf, feature = FeatureValue,"plots/shannon.png", scalemeasurement = loadtype)
+# 
+# filtered_longdf <- longdf %>%
+#   dplyr::filter(Feature %in% c("Simpson")) %>%
+#   dplyr::mutate(Study = str_replace(Study, " \\(MLP Training data\\)", ""))
+# plot_studyfeatures(filtered_longdf, feature = FeatureValue, "plots/simpson.png", scalemeasurement = loadtype)
+# 
+# filtered_longdf <- longdf %>%
+#   dplyr::filter(Feature %in% c("Evenness")) %>%
+#   dplyr::mutate(Study = str_replace(Study, " \\(MLP Training data\\)", ""))
+# plot_studyfeatures(filtered_longdf, feature = FeatureValue, "plots/eveness.png", scalemeasurement = loadtype)
+
+
+for (study_name in names(studies)) {
+  loadcorrelation(study_name, studies[[study_name]])
+}
+```
+
+```{r plotting feature importance}
+
+correlation_heatmap <- plot_heatmap(correlation_df, "correlation",plotytitle = TRUE)
+non_correlation_heatmap <- plot_heatmap(non_correlation_df, "non_correlation", plotytitle = TRUE)
+r2_heatmap <- plot_heatmap(r2_df, "r2")
+numeric_heatmap <- plot_heatmap(numeric_df_clean, "numeric")
+categorical_heatmap <- plot_heatmap(categorical_df, "categorical")
+
+final_plot <- 
+  (correlation_heatmap + numeric_heatmap + 
+     plot_layout(ncol = 2, widths = c(1, 1))) /
+  (non_correlation_heatmap + r2_heatmap + categorical_heatmap +
+     plot_layout(ncol = 3, widths = c(2, 1, 3))) +
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "bottom",
+    legend.key.size = unit(1.5, "cm"),
+    legend.spacing.x = unit(1.5, "cm"),
+    legend.justification = "center",
+    legend.margin = margin(t = 10, r = 10, b = 10, l = 0),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+# Save the final plot
+ggsave("Feature_heatmap.png", final_plot, width = 45, height = 45, dpi = 300, bg='white')
+
+
+```
+
+```{r feature correlations}
+
+r2_df <- r2_df %>%
+      mutate(
+        Metric_Short = case_when(
+          grepl("r2", Metric) ~ "R²",
+          grepl("r$", Metric) ~ "R",
+          grepl("R²", Metric) ~ "R²",
+          grepl("R$", Metric) ~ "R",
+          grepl("p", Metric) ~ "p-value",
+          grepl("p-value", Metric) ~ "p-value",
+          TRUE ~ Metric 
+        ),
+        ScaleType = case_when(
+          Metric_Short == "p-value" ~ "p-value",
+          Metric_Short == "R²" ~ "R²",
+          Metric_Short == "R" ~ "R",
+          TRUE ~ Metric_Short
+        ),
+        FillColor = case_when(
+          ScaleType == "R²" ~ scales::rescale(Value, to = c(0, 1)),
+          ScaleType == "R"  ~ scales::rescale(Value, to = c(-1, 1)),
+          TRUE ~ NA_real_
+        )
+      )
+
+# Step 1: Clean and merge longdf with r2_df
+long_df_merged <- longdf %>%
+  # Clean Study and Reference fields
+  mutate(
+    Study_clean = str_replace(Study, " \\(MLP Training data\\)", ""),
+    Reference_clean = str_replace(Reference, " \\(MLP Training data\\)", "")
+  ) %>%
+  # Join on cleaned Study and Reference/Model fields
+  left_join(
+    r2_df %>%
+      filter(Metric_Short == "R²") %>%
+      dplyr::select(
+        Study_clean = RowLabel_Study,
+        Reference_clean = RowLabel_Model,
+        r2_value = Value
+      ),
+    by = c("Study_clean", "Reference_clean")
+  ) 
+
+library(ggpmisc)
+
+# Ensure exactly one value per study per feature and drop Features with any NA FeatureValue
+plot_data_cleaned <- long_df_merged %>%
+  filter(loadtype == "Flow Cytometry") %>%
+  group_by(Study, Feature, Reference_clean) %>%
+  summarise(
+    r2_value = first(r2_value),
+    FeatureValue = first(FeatureValue),
+    Study_clean = first(Study_clean),
+    .groups = "drop"
+  ) %>%
+  group_by(Feature) %>%
+  filter(!any(is.na(FeatureValue))) %>%
+  ungroup()
+
+
+plot_data_cleaned <- plot_data_cleaned %>%
+  mutate(Reference_clean = fct_relevel(Reference_clean, "Vandeputte2021","GALAXY","MetaCardis"))
+
+excluded_studies <- c("GALAXY (MLP Training data)", "MetaCardis (MLP Training data)")
+
+plot_data_cleaned <- plot_data_cleaned %>%
+  filter(!(Study %in% excluded_studies & Study_clean == Reference_clean))
+
+
+plot_data_cleaned <- plot_data_cleaned %>%
+  mutate(Reference_clean = fct_recode(Reference_clean,
+    "MetaCardis (MLP)" = "MetaCardis",
+    "GALAXY (MLP)" = "GALAXY",
+    "Vandeputte 2021 (MLP)" = "Vandeputte2021"
+  ))
+
+sparsity_features <- c("Sample Taxa Sparsity", "Sample ∩ MLP Feature Sparsity")
+
+plot_data_cleaned <- plot_data_cleaned %>%
+  mutate(FeatureValue = if_else(
+    Feature %in% sparsity_features,
+    FeatureValue * 100,
+    FeatureValue
+  ))
+
+
+desired_order <- c(
+  # Alpha diversity
+  "Shannon",
+  "Simpson",
+  
+  # Overlap / Non-overlap
+  "Shared Taxa (Study ∩ MLP Features)",
+  
+  # Diversity/sparsity
+  "Sample ∩ MLP Feature Abundant Taxa",
+  "Sample ∩ MLP Feature Sparsity"
+)
+
+excluded_studies <- c("Vandeputte2021 (MLP Training data)")
+
+plot_data_cleaned <- plot_data_cleaned %>%
+  filter(!Study %in% excluded_studies)
+
+plot_data_filtered <- plot_data_cleaned %>%
+  filter(Feature %in% desired_order)
+
+plot_data_filtered <- plot_data_filtered %>%
+  filter(!is.na(Feature), Feature %in% desired_order) %>%
+  mutate(Feature = factor(Feature, levels = desired_order))
+
+label_df <- plot_data_filtered %>%
+  filter(r2_value > 0.3)
+
+tidyplot_colors <- c("#000000","#0C58CA","#FF8C27")
+
+# Create professional faceted plot
+facet_plot <- ggplot(plot_data_filtered, aes(x = r2_value, y = FeatureValue, color = Reference_clean)) +
+  geom_point(size = 6, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 1) +
+  labs(
+    x = "R²",  # Plain text to match parse = FALSE
+    y = NULL,
+    color = "Model"
+  ) +
+  scale_color_manual(
+    values = tidyplot_colors,  # Adjust if Models change
+    guide = guide_legend(title.position = "top")
+  ) +
+  stat_poly_eq(
+    aes(label = paste(after_stat(rr.label))),
+    label.x = "left",
+    label.y = "top",
+    formula = y ~ x,
+    parse = TRUE,  # Using plain text to avoid parsing error
+    size = 10,
+    color = "black",
+    fontface = "bold"
+  ) +
+  facet_wrap(
+  ~ Feature,
+  scales = "free_y",
+  labeller = as_labeller(c(
+        # --- Alpha diversity ---
+    "Observed" = "Observed Taxa (count)", 
+    "Shannon" = "Shannon Diversity", 
+    "Simpson" = "Simpson Diversity", 
+    "Evenness" = "Evenness (%)",
+    
+    # --- Taxa overlap/non-overlap ---
+    "Shared Taxa (Study ∩ Training Study)" = "Shared Taxa \n(Study ∩ Training Study)",
+    "Shared Taxa (Study ∩ MLP Features)" = "Shared Taxa (%)" ,
+    "Taxa >0 (Sample ∩ MLP Features)" = "Taxa >0 (%)",
+    "Taxa >0 (Sample ∉ MLP Features)" = "Taxa >0 \n(Sample ∉ MLP Features) (%)",
+    "Taxa >0 (Sample ∩ Training Study)" = "Taxa >0 \n(Sample ∩ Training Study) (%)",
+    "Taxa >0 (Sample ∉ Training Study)" = "Taxa >0 \n(Sample ∉ Training Study) (%)",
+    "# Taxa ∩ MLP Features" = "Shared Taxa (count)",
+    "# Taxa ∉ MLP Features" = "# Taxa ∉ MLP Features",
+    
+    # --- Diversity/sparsity ---
+    "Beta Diversity: Study vs Training Study" = "Beta Diversity \n(Study vs Training Study)",
+    "Sample Taxa Sparsity" = "Sample Taxa Sparsity (%)",
+    "Sample Rare Taxa" = "Sample Rare Taxa",
+    "Sample ∩ MLP Feature Abundant Taxa" = "Abundant Taxa >0.1 (%)",
+    "Sample ∩ MLP Feature Sparsity" = "Sparsity (%)"
+  )),
+  nrow = 1,
+  ncol = 5
+  ) +
+  ggrepel::geom_text_repel(
+  data = label_df,
+  aes(label = Study_clean),
+  size = 4,
+  max.overlaps = Inf,
+  box.padding = 0.5,
+  point.padding = 1,
+  force = 2,
+  min.segment.length = 0,
+  segment.color = "grey50",
+  segment.size = 0.3
+) +
+  theme_bw(base_size = 16) +
+  theme(
+    text = element_text(family = "Arial", color = "black"),
+    axis.title = element_text(size = 26, face = "bold", margin = margin(t =10)),
+    axis.title.x = element_text(size = 26, face = "bold", margin = margin(t = 30)),
+    axis.text = element_text(size = 24),
+    legend.position = "top",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 22),
+    legend.spacing = unit(1.2, "lines"),  # space between legend title and items
+    legend.margin = margin(b = 10),
+    panel.grid.major = element_line(color = "grey90", linewidth = 0.2),
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(size = 24, face = "bold",  margin = margin(t=20, b = 40)),
+    plot.margin = margin(t = 10, r = 10, b = 10, l = 10),
+    strip.background = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black", linewidth = 0.4),
+     panel.spacing = unit(2, "lines")
+  )
+
+# Save for publication
+ggsave("plots/featurecorrelations.png", facet_plot, width = 25, height = 8, dpi = 600, bg = "white")
+
+```
+
+```{r author similarity}
+
+# Read the data
+authors <- read.csv("~/Documents/pennstate/silvermanlab/mlscale/MLPpredictions_realdata/processedandfinalcomparisons/publication_data.csv", stringsAsFactors = FALSE)
+training_authors <- c("Jeroen Raes", "Peer Bork", "Aleksander Krag")
+r2_only <- r2_df %>%
+  filter(Metric_Short == "R²") %>%
+  mutate(
+    Study.Identifier = ifelse(
+      str_detect(RowLabel_Study, "\\d{4}"),
+      str_replace(RowLabel_Study, "(\\D+)(\\d{4})", "\\1 \\2"),
+      RowLabel_Study
+    )
+  )
+# extra_ids <- c(
+#   "MetaCardis (Fromentin 2021)",
+#   "GALAXY (GALA-ALD 2016)",
+#   "GALAXY (GALA-ALD 2018)",
+#   "GALAXY (GALA-ALD 2021)",
+#   "GALAXY (GALA-HP 2022)",
+#   "GALAXY (GALA-HP 2023)",
+#   "GALAXY (GALA-RIF 2018)",
+#   "GALAXY (GALA-RIF 2023)",
+#   "GALAXY (AlcoChallenge 2021)",
+#   "GALAXY (AlcoChallenge 2022)",
+#   "GALAXY (AlcoChallenge 2024)",
+#   "GALAXY (AlcoChallenge 2023)",
+#   "GALAXY (HCO 2022)",
+#   "GALAXY (HCO 2023)",
+#   "GALAXY (GALA-POSTBIO, GastricBypass, HOLBAEK 2011)",
+#   "GALAXY (TIPS 2018)",
+#   "GALAXY (TIPS 2020)",
+#   "GALAXY (TIPS 2021)",
+#   "GALAXY (TIPS 2021-2)"
+# )
+# 
+# # Get only the missing extra studies
+# extra_studies <- authors %>%
+#   filter(Study.Identifier %in% extra_ids & !(Study.Identifier %in% joined$Study.Identifier))
+# 
+# galaxy_r2 <- tibble::tribble(
+#   ~Study,           ~R,    ~Value,
+#   "AlcoChallenge",   0.55,  0.3025,
+#   "GALA-ALD",        0.47,  0.2209,
+#   "GALA-HP",         0.52,  0.2704,
+#   "GALA-POSTBIO",    0.54,  0.2916,
+#   "GALA-RIF",        0.58,  0.3364,
+#   "GastricBypass",   0.60,  0.36,
+#   "HCO",             0.50,  0.25,
+#   "HOLBAEK",         0.53,  0.2809,
+#   "TIPS",            0.62,  0.3844
+# )
+# 
+# galaxy_extra <- authors %>%
+#   filter(str_detect(Study.Identifier, paste(galaxy_r2$Study, collapse = "|"))) %>%
+#   mutate(Metric = "r2") %>%
+#   left_join(galaxy_r2, by = c("Study.Identifier" = "Study"))
+# 
+
+joined <- r2_only %>%
+  left_join(authors, by = "Study.Identifier")
+
+contijoch_ref <- joined %>%
+  filter(RowLabel_Study == "Contijoch2019") %>%
+  dplyr::select(PMID, Title, Authors, Publication.Year, Link, Measurement.Type) %>%
+  slice(1)  
+
+joined <- joined %>%
+  mutate(
+    PMID = if_else(RowLabel_Study == "Contijoch2019 16S", contijoch_ref$PMID, PMID),
+    Title = if_else(RowLabel_Study == "Contijoch2019 16S", contijoch_ref$Title, Title),
+    Authors = if_else(RowLabel_Study == "Contijoch2019 16S", contijoch_ref$Authors, Authors),
+    Publication.Year = if_else(RowLabel_Study == "Contijoch2019 16S", contijoch_ref$Publication.Year, Publication.Year),
+    Link = if_else(RowLabel_Study == "Contijoch2019 16S", contijoch_ref$Link, Link),
+    Measurement.Type = if_else(RowLabel_Study == "Contijoch2019 16S", contijoch_ref$Measurement.Type, Measurement.Type),
+    Sequencing = if_else(RowLabel_Study == "Contijoch2019 16S", "16S", Sequencing)
+  )
+
+joined <- joined %>%
+  mutate(
+    Sequencing = if_else(RowLabel_Study == "GALAXY", "shotgun metagenomics", Sequencing),
+    Sequencing = if_else(RowLabel_Study == "MetaCardis", "shotgun metagenomics", Sequencing),
+    Measurement.Type = if_else(RowLabel_Study == "GALAXY", "Flow Cytometry", Measurement.Type),
+    Measurement.Type = if_else(RowLabel_Study == "MetaCardis", "Flow Cytometry", Measurement.Type),
+  )
+
+joined_subset <- joined %>%
+  filter(str_detect(RowLabel_Study, "GALAXY|MetaCardis"))
+study_mappings <- joined_subset %>%
+  distinct(RowLabel_Study) %>%
+  rowwise() %>%
+  mutate(
+    Authors = {
+      matches <- authors %>%
+        filter(str_detect(Study.Identifier, fixed(RowLabel_Study))) %>%
+        pull(Authors)
+      combine_names(matches)
+    },
+    Consortium = {
+      matches <- authors %>%
+        filter(str_detect(Study.Identifier, fixed(RowLabel_Study))) %>%
+        pull(Consortium)
+      combine_names(matches)
+    }
+  ) %>%
+  ungroup()
+
+study_mappings <- study_mappings %>%
+  rename(Authors.new = Authors, Consortium.new = Consortium)
+
+joined <- joined %>%
+  left_join(study_mappings, by = "RowLabel_Study", suffix = c("", ".new")) %>%
+  mutate(
+    Authors = coalesce(Authors.new, Authors),
+    Consortium = coalesce(Consortium.new, Consortium)
+  ) %>%
+  dplyr::select(-Authors.new, -Consortium.new)
+
+
+joined <- joined %>%
+  rowwise() %>%
+  mutate(Author_Overlap_Binary = has_overlapping_author(Authors, Consortium, training_authors)) %>%
+  ungroup() %>%
+  mutate(RowLabel_Model = factor(RowLabel_Model, levels = c("Vandeputte2021", "GALAXY", "MetaCardis")))
+
+categorical_df <- categorical_df %>%
+  mutate(Value = str_squish(Value)) %>%  
+  dplyr::select(Study, Feature, Value) %>%
+  distinct() %>%
+  pivot_wider(names_from = Feature, values_from = Value)
+
+joined <- joined %>%
+  left_join(categorical_df, by = "Study") %>%
+  mutate(
+    loadtype = as.factor(unlist(loadtype)),
+    sequencingtype = as.factor(unlist(sequencingtype)),
+    organismtype = as.factor(unlist(organismtype)),
+    sampletype = as.factor(unlist(sampletype))
+  ) %>%
+  dplyr::select(-trainingset)
+
+joined_flow <- joined %>%
+  filter(
+    Measurement.Type == "Flow Cytometry",
+    !is.na(Authors),
+    Study != "Vandeputte2021 (MLP Training data)",
+    !(Study == "GALAXY (MLP Training data)" & RowLabel_Model == "GALAXY"),
+    !(Study == "MetaCardis (MLP Training data)" & RowLabel_Model == "MetaCardis")
+  )
+
+joined_all <- joined %>%
+  filter(
+    !is.na(Authors),
+    Study != "Vandeputte2021 (MLP Training data)",
+    !(Study == "GALAXY (MLP Training data)" & RowLabel_Model == "GALAXY"),
+    !(Study == "MetaCardis (MLP Training data)" & RowLabel_Model == "MetaCardis")
+  ) 
+
+lm_model <- lm(Author_Overlap_Binary ~ Value, data = joined_all)
+r2_val <- summary(lm_model)$r.squared
+r2_label <- paste0("R² = ", format(round(r2_val, 3), nsmall = 3)) 
+
+
+joined_labels <- joined_all %>%
+  filter(Value > 0.3)
+
+ggplot(joined_all, aes(x = Value, y = Author_Overlap_Binary)) +
+  geom_jitter(aes(color = RowLabel_Model),
+              height = 0.05, width = 0, alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", size = 1) +
+  geom_text_repel(
+    data = joined_labels,
+    aes(label = Study.Identifier),
+    size = 3.5,
+    family = "Arial",
+    box.padding = 0.5,
+    point.padding = 0.3,
+    segment.color = "grey70",
+    segment.size = 0.3,
+    segment.curvature = 0,
+    min.segment.length = 0.1,
+    force = 1.5,
+    max.time = 3,
+    max.iter = 20000,
+    max.overlaps = Inf,
+    nudge_y = 0.05 
+  ) +
+  annotate("text",
+           x = 0.05 * max(joined$Value, na.rm = TRUE),
+           y = 1.1,
+           label = r2_label,
+           hjust = 0,
+           size = 5,
+           family = "Arial") +
+  scale_y_continuous(
+    breaks = c(0, 1),
+    labels = c("No Training Author", "Training Author"),
+    limits = c(-0.2, 1.2)
+  ) +
+  labs(
+    x = expression(bolditalic(R^2)),
+    y = NULL,
+    color = "Model"
+  ) +
+  scale_color_manual(values = c(
+    "Vandeputte2021" = "#000000",     
+    "GALAXY" = "#0C58CA",             
+    "MetaCardis" = "#FF8C27"        
+  )) +
+  tidyplot_theme(base_size = 16) +
+  theme(
+    axis.title.x = element_text(size = 14, face = "bold", margin = margin(t = 10)),
+    axis.text = element_text(size = 12),
+    axis.text.y = element_text(hjust = 1, face = "bold"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(color = "grey90", size=0.3),
+    plot.margin = margin(10, 20, 10, 10),
+    legend.position = "top"
+  )
+
+ggsave("plots/author_overlap_r2_plot.png", width = 8, height = 5, units = "in", dpi = 600)
+ggsave("plots/author_overlap_r2_plot.tiff", width = 8, height = 5, units = "in", dpi = 600, compression = "lzw")
+ggsave("plots/author_overlap_r2_plot.pdf", width = 8, height = 5, device = cairo_pdf)
+
+
+################## PAIRWISE OVERLAP ############################################
+
+joined_all$AuthorSet <- mapply(function(auth, cons) {
+  raw <- c(auth, cons)
+  tokens <- unlist(strsplit(raw, "[,;]"))
+  trimws(unique(tokens[nzchar(tokens)]))
+}, joined_all$Authors, joined_all$Consortium, SIMPLIFY = FALSE)
+study_ids <- joined_all$Study.Identifier
+n <- length(study_ids)
+overlap_matrix <- matrix(0, nrow = n, ncol = n, dimnames = list(study_ids, study_ids))
+for (i in seq_len(n)) {
+  for (j in seq_len(n)) {
+    overlap_matrix[i, j] <- length(intersect(joined_all$AuthorSet[[i]], joined_all$AuthorSet[[j]]))
+  }
+}
+overlap_df <- as.data.frame(overlap_matrix)
+
+#################################################BOXPLOTS#######################
+
+joined_all = joined_all %>%
+  mutate(
+    Author_Overlap_Binary = factor(Author_Overlap_Binary, levels = c(0, 1), labels = c("Absent", "Present"))
+  )
+
+joined_all |>
+  tidyplot(x = Author_Overlap_Binary, y = Value, width=80, height=80) |>
+  add_boxplot(alpha = 0.2, color = "black", fill = "#b2b2b2") |> 
+  add_data_points_beeswarm(size = 1.5, alpha = 0.8, color = "#000000") |> 
+  add_sem_errorbar(color = "black") |> 
+  add_test_pvalue(method = "t_test", p.adjust.method = "BH") |> 
+  adjust_title("Training Data Corresponding Author Presence\n in Study vs Predicted Load R²") |>
+  adjust_x_axis_title(" ") |>
+  adjust_y_axis_title("R²") |>
+  theme_tidyplot() |>
+  save_plot("plots/Authorpresence_boxplot.png")
+
+
+joined_all |>
+  filter(sequencingtype == "16S rRNA") |>
+  tidyplot(x = Author_Overlap_Binary, y = Value, width=80, height=80) |>
+  add_mean_bar(alpha = 0.2, color = "black", fill = "#b2b2b2") |> 
+  add_data_points_beeswarm(size = 1.5, alpha = 0.8, color = "#000000") |> 
+  add_sem_errorbar(color = "black") |> 
+  add_test_pvalue(method = "t_test", p.adjust.method = "BH") |> 
+  adjust_title("Training Data Corresponding Author Presence\n in Study vs Predicted Load R²\n16S rRNA Amplcion Sequencing") |>
+  adjust_x_axis_title(" ") |>
+  adjust_y_axis_title("R²") |>
+  theme_tidyplot() |>
+  save_plot("plots/16s_Authorpresence_boxplot.png")
+
+joined_all |>
+  filter(sequencingtype == "shotgun metagenomics") |>
+  tidyplot(x = Author_Overlap_Binary, y = Value, width=80, height=80) |>
+  add_mean_bar(alpha = 0.2, color = "black", fill = "#FF8C27") |> 
+  add_data_points_beeswarm(size = 1.5, alpha = 0.8, color="black") |> 
+  add_sem_errorbar(color = "black") |> 
+  add_test_pvalue(method = "t_test", p.adjust.method = "BH") |> 
+  adjust_title("Training Data Corresponding Author Presence\n in Study vs Predicted Load R²\nShotgun Sequencing") |>
+  adjust_x_axis_title(" ") |>
+  adjust_y_axis_title("R²") |>
+  theme_tidyplot() |>
+  save_plot("plots/shotgun_Authorpresence_boxplot.png")
+
+
+
+joined_all |>
+  filter(loadtype == "Flow Cytometry") |>
+  filter(organismtype == "Human") |>
+  filter(sampletype == "Fecal") |>
+  tidyplot(x = Author_Overlap_Binary, y = Value, width=80, height=80) |>
+  add_mean_bar(alpha = 0.2, color = "black", fill = "#b2b2b2") |> 
+  add_data_points_beeswarm(size = 1.5, alpha = 0.8, color = "#0C58CA") |> 
+  add_sem_errorbar(color = "black") |> 
+  add_test_pvalue(method = "t_test", p.adjust.method = "BH") |> 
+  adjust_title("Training Data Corresponding Author Presence\n in Study vs Predicted Load R²\n Human Fecal Flow Cytometry") |>
+  adjust_x_axis_title(" ") |>
+  adjust_y_axis_title("R²") |>
+  theme_tidyplot() |>
+  save_plot("plots/whensupposedtoworkwell_Authorpresence_boxplot.png")
+
+joined_all |>
+  filter(loadtype == "qPCR") |>
+  tidyplot(x = Author_Overlap_Binary, y = Value, width=80, height=80) |>
+  add_mean_bar(alpha = 0.2, color = "black", fill = "#b2b2b2") |> 
+  add_data_points_beeswarm(size = 1.5, alpha = 0.8, color = "#E64B35") |> 
+  add_sem_errorbar(color = "black") |> 
+  add_test_pvalue(method = "t_test", p.adjust.method = "BH") |> 
+  adjust_title("Training Data Corresponding Author Presence\n in Study vs Predicted Load R²\n qPCR") |>
+  adjust_x_axis_title(" ") |>
+  adjust_y_axis_title("R²") |>
+  theme_tidyplot() |>
+  save_plot("plots/notspecifiedtowork_qPCR_Authorpresence_boxplot.png")
+
+joined_all |>
+  filter(!(organismtype == "Human")) |>
+  tidyplot(x = Author_Overlap_Binary, y = Value, width=80, height=80) |>
+  add_mean_bar(alpha = 0.2, color = "black", fill = "#b2b2b2") |> 
+  add_data_points_beeswarm(size = 1.5, alpha = 0.8) |> 
+  add_sem_errorbar(color = "black") |> 
+  adjust_title("Training Data Corresponding Author Presence\n in Study vs Predicted Load R²\n Not Human") |>
+  adjust_x_axis_title(" ") |>
+  adjust_y_axis_title("R²") |>
+  theme_tidyplot() |>
+  save_plot("plots/notspecifiedtowork_nonhuman_Authorpresence_boxplot.png")
+
+
+```
+
+```{r key author presence}
+plot_key_author_presence <- function(subset_df, key_authors, width = 20, height = 20, prefix_label = "Subset") {
+  
+  num_studies <- nrow(subset_df)
+  presence_mat <- matrix(0, nrow = num_studies, ncol = num_studies)
+  rownames(presence_mat) <- subset_df$Study.Identifier
+  colnames(presence_mat) <- subset_df$Study.Identifier
+
+  # Fill matrix with presence (✔️ if any key author is present)
+  for (i in seq_len(num_studies)) {
+    for (j in i:num_studies) {
+      authors_j    <- str_split(subset_df$Authors[j], ",\\s*")[[1]]
+      consortium_j <- str_split(subset_df$Consortium[j], ",\\s*")[[1]]
+      combined_j   <- unique(c(authors_j, consortium_j))
+      
+      is_present <- any(combined_j %in% key_authors)
+      val <- ifelse(is_present, 100, 0)
+      
+      presence_mat[i, j] <- val
+      presence_mat[j, i] <- val
+    }
+  }
+
+  # Melt for plotting
+  heatmap_data <- melt(presence_mat)
+  colnames(heatmap_data) <- c("Study_A", "Study_B", "Presence")
+
+  # Labels
+  author_label <- paste(key_authors, collapse = ", ")
+  file_suffix  <- gsub("\\s+", "_", paste(key_authors, collapse = "_"))
+
+  # Plot
+  heatmap_plot <- ggplot(heatmap_data, aes(x = Study_A, y = Study_B, fill = Presence)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(low = "white", high = tidyplot_colors[2], name = "Presence (%)") +
+    geom_text(aes(label = ifelse(Presence == 100, "✔", "")), 
+              color = tidyplot_colors[1], size = 10) +
+    tidyplot_theme() +
+    labs(
+      title    = paste0("Key Author Presence: ", author_label),
+      subtitle = "16S rRNA Amplicon",
+      x = NULL, 
+      y = NULL
+    ) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      axis.text.y = element_text(hjust = 1),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      plot.subtitle = element_text(size = 20, hjust = 0.5)
+    ) +
+    coord_fixed()
+
+  # Save plot
+  if (!dir.exists("plots")) dir.create("plots")
+  out_name <- paste0("plots/Author_presence_heatmap_", gsub("\\s+", "_", prefix_label), "_", file_suffix, ".png")
+  ggsave(out_name, heatmap_plot, width = width, height = height, dpi = 600, bg = 'white')
+  print(heatmap_plot)
+}
+```
+
+
+
+```{r author similarity revised}
+
+tidyplot_theme <- function(base_size = 8) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      text = element_text(family = "Arial", color = "black"),
+      plot.title = element_text(
+        size = base_size * 1.4,        
+        face = "bold",
+        hjust = 0.5,
+        margin = margin(b = 5)
+      ),
+      plot.subtitle = element_text(
+        size = base_size * 1.25,       
+        hjust = 0.5,
+        margin = margin(b = 5)
+      ),
+      axis.title = element_text(
+        size = base_size * 1.2,        
+        face = "plain"
+      ),
+      axis.title.x = element_text(
+        margin = margin(t = 8), 
+        hjust = 0.5
+      ),
+      axis.title.y = element_text(
+        margin = margin(r = 8), 
+        hjust = 0.5
+      ),
+      axis.text = element_text(
+        size = base_size,
+        color = "black"
+      ),
+      axis.line = element_line(linewidth = 0.5, color = "black"),
+      axis.ticks = element_line(linewidth = 0.5, color = "black"),
+      axis.ticks.length = unit(0.2, "cm"),
+      panel.grid = element_blank(),
+      panel.border = element_blank(),
+      plot.margin = margin(1, 1, 1, 1, unit = "cm"),
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      legend.title = element_text(size = base_size * 1.2),
+      legend.text  = element_text(size = base_size)
+    )
+}
+
+library(scales)  # for `col2rgb` and RGB to hex conversion
+
+  
+tidyplot_colors <- c("#000000","#0C58CA","#FF8C27")
+
+authors_16S     <- joined %>% filter(Sequencing == "16S")
+authors_shotgun <- joined %>% filter(Sequencing == "shotgun metagenomics")
+
+if (nrow(authors_16S) > 1) {
+  plot_jaccard_heatmap(authors_16S, use_consortium=FALSE, prefix_label = "16S rRNA Amplicon")
+} else {
+  message("Not enough 16S studies to plot.")
+}
+
+if (nrow(authors_shotgun) > 1) {
+  plot_jaccard_heatmap(authors_shotgun, height=30, width=30, prefix_label = "Shotgun Metagenomics")
+} else {
+  message("Not enough shotgun studies to plot.")
+}
+
+if (nrow(authors_16S) > 1) {
+    plot_key_author_presence(authors_16S, "Jeroen Raes", prefix_label = "16S")
+}
+if (nrow(authors_shotgun) > 1) {
+    plot_count_keyauthor_presence(authors_shotgun, training_authors, prefix_label = "shotgun")
+}
+
+#vandeputte_authors <- c("Doris Vandeputte", "Jeroen Raes")
+#shotgun_authors <- c("Sebastien Fromentin", "Suguru Nishijima", "Peer Bork", "Aleksander Krag")
+
+# if (nrow(authors_16S) > 1) {
+#     plot_key_author_presence(authors_16S, "Jeroen Raes", prefix_label = "16S")
+# }
+# if (nrow(authors_shotgun) > 1) {
+#     plot_count_keyauthor_presence(authors_shotgun, training_authors, prefix_label = "shotgun")
+# }
+
+```
+
+# ```{r Correct predictions}
+# 
+# library(randomForest)
+# library(cluster)
+# library(FactoMineR)
+# library(factoextra)
+# library(ggcorrplot)
+# 
+# trainingtaxa_studies <- extracttrainingfeatures(studies, datasets)
+# 
+# flat = flatten_and_separate(trainingtaxa_studies, datasets)
+# amplicon = flat$`16S`
+# shotgunned = flat$shotgun
+# 
+# allfeatures <- allfeatures %>%
+#   dplyr::mutate(Residual = PredictedLoad - MeasuredLoad)
+# 
+# # Define the threshold for "correct" predictions (10th percentile of residuals)
+# thresholds <- allfeatures %>%
+#   dplyr::select(Residual) %>%
+#   summarise(threshold = quantile(Residual, probs = 0.25, na.rm = TRUE))
+# 
+# # Assign labels
+# allfeatures <- allfeatures %>%
+#   mutate(correct_prediction = ifelse(Residual <= thresholds$threshold, "Correct", "Incorrect"))
+# 
+# # Convert to factor
+# allfeatures$correct_prediction <- as.factor(allfeatures$correct_prediction)
+# 
+# 
+# # Subset for 16S rRNA studies
+# all_features_16S <- allfeatures %>%
+#   filter(sequencingtype == "16S rRNA")
+# 
+# amplicon$correct_prediction <- all_features_16S$correct_prediction
+# 
+# # Subset for shotgun metagenomics studies
+# all_features_shotgun <- allfeatures %>%
+#   filter(sequencingtype == "shotgun metagenomics")
+# 
+# shotgunned$correct_prediction <- all_features_shotgun$correct_prediction
+# 
+# # Define feature columns to keep
+# selected_features <- c(
+#   # Microbiome-derived features
+#   "Proportion of Present Taxa (>0) in Dataset Sample Found in Present Taxa (>0) in Training Dataset",
+#   "Proportion of Present Taxa (>0) in Dataset Sample Found in Present Taxa (>0) in Training Dataset Used in MLP",
+#   "Proportion of Training Taxa Found in Dataset",
+#   "Proportion of Present Taxa (>0) in Dataset Sample Not Found in Present Taxa (>0) in Training Dataset",
+#   "Proportion of Present Taxa (>0) in Dataset Sample Not Found in Present Taxa (>0) in Training Dataset Used in MLP",
+#   "Proportion of Training Taxa Not Found in Dataset",
+#   "No. of Training Taxa Found in Dataset / No. Total Training Taxa",
+#   "Beta Diversity between Datasets",
+#   "Sample Sparsity",
+#   "Sample Proportion of Rare Taxa",
+#   "Observed.of.Taxa.Used.in.MLP",
+#   "Shannon.of.Taxa.Used.in.MLP",
+#   "Simpson.of.Taxa.Used.in.MLP",
+#   "Evenness.of.Taxa.Used.in.MLP",
+#   "Sample Proportion of Rare Taxa of Taxa Used in MLP",
+#   "Sample Sparsity of Taxa Used in MLP",
+#   "No. Taxa used for Model Testing",
+#   "No. Taxa added by Model with Psuedocount Value",
+#   
+#   # Metadata to retain
+#   "classifier",
+#   "loadtype",
+#   "organismtype",
+#   "sampletype",
+#   
+#   # Correct prediction label
+#   "correct_prediction"
+# )
+# # 
+# # # Subset for 16S rRNA studies
+# mlp_features_16S <- all_features_16S %>%
+#   dplyr::select(all_of(selected_features)) %>%
+#   filter(complete.cases(.))  # Remove missing values
+# 
+# # Subset for shotgun metagenomics studies
+# mlp_features_shotgun <- all_features_shotgun %>%
+#   dplyr::select(all_of(selected_features)) %>%
+#   filter(complete.cases(.))  # Remove missing values
+# 
+# 
+# 
+# # Remove metadata features from the analysis
+# metadata_cols <- c("classifier", "loadtype", "organismtype", "sampletype")
+# 
+# # Features to use for MLP model evaluation (excluding metadata)
+# mlp_features_16S <- mlp_features_16S %>%
+#   dplyr::select(-all_of(metadata_cols))
+# 
+# mlp_features_shotgun <- mlp_features_shotgun %>%
+#   dplyr::select(-all_of(metadata_cols))
+# 
+# removeshotgun = c("Beta Diversity between Datasets")
+# mlp_features_shotgun <- mlp_features_shotgun %>%
+#   dplyr::select(-all_of(removeshotgun))
+# 
+# # Fix column names to be syntactically valid
+# colnames(mlp_features_16S) <- make.names(colnames(mlp_features_16S))
+# colnames(mlp_features_shotgun) <- make.names(colnames(mlp_features_shotgun))
+# 
+# # Train Random Forest for 16S
+# set.seed(123)
+# rf_model_16S <- randomForest(correct_prediction ~ ., 
+#                              data = mlp_features_16S, 
+#                              importance = TRUE)
+# 
+# importance_16S <- as.data.frame(rf_model_16S$importance) %>%
+#   rownames_to_column(var = "Feature") %>%
+#   arrange(desc(MeanDecreaseGini))
+# 
+# importance_16S <- importance_16S %>%
+#   mutate(Feature = fct_reorder(Feature, MeanDecreaseGini))
+# 
+# importance_16S |>
+#   tidyplot(x = MeanDecreaseGini, y = Feature) |>
+#   add_mean_bar() |>
+#   adjust_x_axis_title("Mean Decrease Gini") |>
+#   adjust_y_axis_title("Feature") |>
+#   add_title("Feature Importance (16S)") |>
+#   adjust_theme_details()
+# 
+# mlp_features_16S <- amplicon %>%
+#   dplyr::select(where(is.numeric))
+# mlp_features_16S <- mlp_features_16S[, apply(mlp_features_16S, 2, var, na.rm = TRUE) > 0]
+# rownames(mlp_features_16S) = NULL
+# scaled_features_16S <- scale(mlp_features_16S)
+# pca_indices <- rownames(mlp_features_16S)
+# pca_loadtype <- all_features_16S$loadtype
+# pca_loadtype <- as.factor(pca_loadtype)
+# pca_result_16S <- PCA(scaled_features_16S, graph = FALSE)
+# fviz_pca_ind(pca_result_16S,  addEllipses = TRUE, habillage = pca_loadtype,  # Color by sequencing type
+#              palette = "jco",
+#              title = "PCA of Correct vs Incorrect Predictions (16S)")
+# 
+# # Extract PCA coordinates
+# pca_data <- as.data.frame(pca_result_16S$ind$coord)  # Extract 
+# pca_data <- cbind(pca_data, all_features_16S)
+# 
+# # Plot PCA with continuous color scale for Residual
+# ggplot(pca_data, aes(x = Dim.1, y = Dim.2, color = Residual)) +
+#   geom_point(size = 3, alpha = 0.8) +
+#   scale_color_gradientn(colors = c("blue", "yellow", "red")) +  # Customize color scale
+#   theme_minimal() +
+#   labs(title = "PCA of Correct vs Incorrect Predictions (16S)", 
+#        x = "PC1", y = "PC2", color = "Residual")
+# 
+# # List of columns to exclude (modify as needed)
+# exclude_columns <- c("Sample_ID","Study", "Reference", "MeasuredLoad", "PredictedLoad", "time..hours.", "Read.number", "Sample.Coverage", "Var.1", "Avg_Ct", "Std_Ct", "Std_Calibrated_rConc", "GalaxyPredictedLoad", "MetaCardisPredictedLoad", "logCopyNumber")
+# 
+# 
+# # Clean column names to make them ggplot-friendly
+# clean_names <- make.names(colnames(all_features_16S), unique = TRUE)
+# colnames(all_features_16S) <- clean_names
+# 
+# # Remove unwanted columns from `all_features_16S`
+# all_features_16S <- all_features_16S %>%
+#   dplyr::select(-all_of(exclude_columns))
+# 
+# # Merge PCA results with all features (both numeric & categorical)
+# pca_data <- cbind(as.data.frame(pca_result_16S$ind$coord), all_features_16S)
+# 
+# pca_data <- pca_data %>% dplyr::select(-SampleID)
+# 
+# numeric_features <- names(dplyr::select(all_features_16S, where(is.numeric)))
+# categorical_features <- names(dplyr::select(pca_data, where(negate(is.numeric))))
+# 
+# # Convert categorical variables to factors
+# pca_data <- pca_data %>%
+#   dplyr::mutate(across(all_of(categorical_features), as.factor))
+# 
+# # Convert numeric features to character before pivoting (to prevent errors)
+# pca_data <- pca_data %>%
+#   mutate(across(all_of(numeric_features), as.character))
+# 
+# # Reshape data: Pivot numeric and categorical features separately
+# pca_long <- pca_data %>%
+#   pivot_longer(cols = all_of(c(numeric_features, categorical_features)), 
+#                names_to = "Feature", 
+#                values_to = "Feature_Value")
+# 
+# # Convert numeric values back to numeric where possible, but keep categorical values as factors
+# pca_long <- pca_long %>%
+#   mutate(
+#     Feature_Value = ifelse(Feature %in% numeric_features, 
+#                            as.numeric(Feature_Value), 
+#                            as.factor(Feature_Value))  # Ensure categorical features stay factors
+#   )
+# 
+# # Check if the variable is numeric for coloring
+# pca_long <- pca_long %>%
+#   mutate(ValueType = ifelse(Feature %in% numeric_features, "Numeric", "Categorical"))
+# 
+# # Create a list to store individual PCA plots
+# plot_list <- list()
+# 
+# # Generate individual PCA plots for each feature
+# for (feature in unique(pca_long$Feature)) {
+#   
+#   print(feature)
+#   
+#   # Subset data for the current feature
+#   feature_data <- pca_long %>% filter(Feature == feature)
+#   
+#   # Determine if the feature is numeric or categorical
+#   is_numeric <- feature %in% numeric_features
+#   
+#   # Generate PCA plot
+#   p <- ggplot(feature_data, aes(x = Dim.1, y = Dim.2, color = Feature_Value)) +
+#     geom_point(size = 1, alpha = 0.8) +
+#     theme_minimal() +
+#     labs(title = feature, x = "PC1", y = "PC2", color = feature)
+#   
+#   # Apply the correct color scale
+#   if (is_numeric) {
+#     p <- p + scale_color_gradientn(colors = c("blue", "yellow", "red"), na.value = "black")
+#   } else {
+#     p <- p + scale_color_manual(values = c("black", "red", "blue", "green"))
+#   }
+#   print(p)
+#   
+#   # Add the plot to the list
+#   plot_list[[feature]] <- p
+# }
+# 
+# # Combine all plots into a grid layout (adjust number of columns as needed)
+# grid_plot <- wrap_plots(plot_list, ncol = 3)  # Adjust for better layout
+# 
+# # Save the combined plot as a large PNG image
+# ggsave("PCA_Grid_Plot.png", grid_plot, width = 30, height = 30, dpi = 300)
+# 
+# fviz_pca_var(pca_result_16S,  addEllipses = TRUE,
+#              title = "PCA of Correct vs Incorrect Predictions (16S)")
+# fviz_pca_biplot(pca_result_16S,  addEllipses = TRUE,habillage = pca_loadtype,  # Color by sequencing type
+#              palette = "jco",
+#              title = "PCA of Correct vs Incorrect Predictions (16S)")
+# 
+# library(Rtsne)
+# library(umap)
+# 
+# # t-SNE for 16S
+# set.seed(42)
+# tsne_16S <- Rtsne(scaled_features_16S, perplexity = 30, theta = 0.5, check_duplicates = FALSE)
+# 
+# # Subset loadtype from all_features_16S using these indices
+# pca_prediction<- all_features_16S$correct_prediction
+# pca_prediction <- as.factor(pca_prediction)
+# 
+# # Convert t-SNE results to dataframe
+# tsne_df_16S <- data.frame(
+#   TSNE1 = tsne_16S$Y[,1], 
+#   TSNE2 = tsne_16S$Y[,2],
+#   classifier = pca_loadtype,
+#   correct_prediction = pca_prediction,
+#   residual = all_features_16S$Residual
+# )
+# 
+# # Plot t-SNE
+# tsne_df_16S |>
+#   tidyplot(x = TSNE1, y = TSNE2, color = correct_prediction) |>
+#   add_data_points(size = 1, alpha = 0.8) |>
+#   adjust_x_axis_title("t-SNE1") |>
+#   adjust_y_axis_title("t-SNE2") |>
+#   add_title("t-SNE of Correct vs Incorrect Predictions (16S) - Colored by Classifier") |>
+#   adjust_theme_details()
+# 
+# 
+# ggplot(tsne_df_16S, aes(x = TSNE1, y = TSNE2, color = classifier, shape = correct_prediction)) +
+#   geom_point(size = 1, alpha = 0.8) +
+#   theme_minimal() +
+#   labs(title = "t-SNE of Correct vs Incorrect Predictions (16S) - Colored by External Scale Measurement")
+# 
+# ggplot(tsne_df_16S, aes(x = TSNE1, y = TSNE2, color = correct_prediction, shape = classifier)) +
+#   geom_point(size = 1, alpha = 0.8) +
+#   theme_minimal() +
+#   labs(title = "t-SNE of Correct vs Incorrect Predictions (16S) - Colored by Residual")
+# 
+# 
+# 
+# 
+# # Train Random Forest for Shotgun Metagenomics
+# rf_model_shotgun <- randomForest::randomForest(correct_prediction ~ ., 
+#                                  data = mlp_features_shotgun, 
+#                                  importance = TRUE)
+# 
+# importance_shotgun <- as.data.frame(rf_model_shotgun$importance) %>%
+#   rownames_to_column(var = "Feature") %>%
+#   arrange(desc(MeanDecreaseGini))
+# 
+# importance_shotgun <- importance_shotgun %>%
+#   mutate(Feature = fct_reorder(Feature, MeanDecreaseGini))
+# 
+# importance_shotgun |>
+#   tidyplot(x = MeanDecreaseGini, y = Feature) |>
+#   add_mean_bar() |>
+#   adjust_x_axis_title("Mean Decrease Gini") |>
+#   adjust_y_axis_title("Feature") |>
+#   add_title("Feature Importance (Shotgun)") |>
+#   adjust_theme_details()
+# 
+# mlp_features_shotgun <- mlp_features_shotgun %>%
+#   dplyr::select(where(is.numeric))
+# mlp_features_shotgun <- mlp_features_shotgun[, apply(mlp_features_shotgun, 2, var, na.rm = TRUE) > 0]
+# scaled_features_shotgun <- scale(mlp_features_shotgun)
+# 
+# 
+# # Get the row indices of mlp_features_16S used in PCA
+# pca_indices <- as.numeric(rownames(mlp_features_shotgun))
+# 
+# # Subset loadtype from all_features_16S using these indices
+# pca_loadtype <- all_features_shotgun$loadtype[pca_indices]
+# 
+# # Convert to factor for PCA visualization
+# pca_loadtype <- as.factor(pca_loadtype)
+# 
+# # PCA for Shotgun
+# pca_result_shotgun <- PCA(scaled_features_shotgun, graph = FALSE)
+# fviz_pca_ind(pca_result_shotgun, addEllipses = TRUE, habillage = pca_loadtype,  # Color by sequencing type
+#              palette = "jco",
+#              title = "PCA of Correct vs Incorrect Predictions (Shotgun)")
+# fviz_pca_var(pca_result_shotgun, addEllipses = TRUE, repel= TRUE,
+#              title = "PCA of Correct vs Incorrect Predictions (Shotgun)")
+# fviz_pca_biplot(pca_result_shotgun, addEllipses = TRUE, habillage = pca_loadtype,  # Color by sequencing type
+#              palette = "jco",
+#              title = "PCA of Correct vs Incorrect Predictions (Shotgun)")
+# 
+# 
+# 
+# ```
+
+```{r Log Fold Change Estimation}
+
+library(readr)
+
+rm(list = ls()[!sapply(ls(), function(x) {
+  is.function(get(x)) || x %in% c("datasets", "studies", "categorical_df")
+})])
+
+# Changing to log2 from log10:
+column_to_transform <- "PredictedLoad"
+df_names <- c(
+  "predicted_load_df",
+  "galaxypredicted_load_df",
+  "metacardispredicted_load_df"
+)
+for (i in seq_along(studies)) {
+  for (df_name in df_names) {
+    
+    if (df_name %in% names(studies[[i]])) {
+      df <- studies[[i]][[df_name]]
+      
+      if (is.data.frame(df) && column_to_transform %in% colnames(df)) {
+        studies[[i]][[df_name]][[column_to_transform]] <- log10_to_log2(df[[column_to_transform]])
+        cat("✓ Transformed", column_to_transform, "in", df_name, "of study", i, "\n")
+      }
+    }
+  }
+}
+column_to_transform <- "MeasuredLoad"
+df_names <- c(
+  "measured_load_df"
+)
+for (i in seq_along(studies)) {
+  for (df_name in df_names) {
+    
+    if (df_name %in% names(studies[[i]])) {
+      df <- studies[[i]][[df_name]]
+      
+      if (is.data.frame(df) && column_to_transform %in% colnames(df)) {
+        studies[[i]][[df_name]][[column_to_transform]] <- log10_to_log2(df[[column_to_transform]])
+        cat("✓ Transformed", column_to_transform, "in", df_name, "of study", i, "\n")
+      }
+    }
+  }
+}
+
+#reassigning studies metadata:
+#VANDEPUTTE2021
+
+#VANDEVELDE2022
+studies[["VandeVelde2022"]][["metadata_df"]] <- as.data.frame(
+  lapply(studies[["VandeVelde2022"]][["metadata_df"]], function(x) {
+    x <- ifelse(x == "" | x == " ", NA, x)
+  }),
+  stringsAsFactors = FALSE
+)
+studies[["VandeVelde2022"]][["metadata_df"]]$Prefix = factor(studies[["VandeVelde2022"]][["metadata_df"]]$Prefix)
+studies[["VandeVelde2022"]][["metadata_df"]]$Well = factor(studies[["VandeVelde2022"]][["metadata_df"]]$Well)
+studies[["VandeVelde2022"]][["metadata_df"]]$Timepoint <- str_replace_all(studies[["VandeVelde2022"]][["metadata_df"]]$Timepoint, "h", "")
+studies[["VandeVelde2022"]][["metadata_df"]]$Timepoint = as.numeric(studies[["VandeVelde2022"]][["metadata_df"]]$Timepoint)
+# replicate_mapping <- c("A" = 1, "B" = 2, "C" = 3, "D" = 4, "mixed" = 999) 
+# studies[["VandeVelde2022"]][["metadata_df"]]$Replicate <- replicate_mapping[studies[["VandeVelde2022"]][["metadata_df"]]$Replicate]
+# studies[["VandeVelde2022"]][["metadata_df"]]$Replicate = as.numeric(studies[["VandeVelde2022"]][["metadata_df"]]$Replicate)
+
+#PEREIRA2023
+studies[["Pereira2023"]][["metadata_df"]] <- as.data.frame(
+  lapply(studies[["Pereira2023"]][["metadata_df"]], function(x) {
+    x <- ifelse(x == "" | x == " ", NA, x)
+  }),
+  stringsAsFactors = FALSE
+)
+studies[["Pereira2023"]][["metadata_df"]]$condition = factor(studies[["Pereira2023"]][["metadata_df"]]$condition)
+studies[["Pereira2023"]][["metadata_df"]]$medium = factor(studies[["Pereira2023"]][["metadata_df"]]$medium)
+#studies[["Pereira2023"]][["metadata_df"]]$`time (hours)` = as.numeric(studies[["Pereira2023"]][["metadata_df"]]$`time (hours)`)
+studies[["Pereira2023"]][["metadata_df"]]$replicate = as.numeric(studies[["Pereira2023"]][["metadata_df"]]$replicate)
+str(studies[["Pereira2023"]][["metadata_df"]])
+
+#KRAWCZYK2022
+studies[["Krawczyk2022"]][["metadata_df"]] <- as.data.frame(
+  lapply(studies[["Krawczyk2022"]][["metadata_df"]], function(x) {
+    x[x == ""] <- NA
+    if(is.character(x) || is.factor(x)) {
+      factor(x)
+    } else {
+      x 
+    }
+  }),
+  stringsAsFactors = FALSE
+)
+studies[["Krawczyk2022"]][["metadata_df"]]$Coordinates = as.character(studies[["Krawczyk2022"]][["metadata_df"]]$Coordinates)
+
+#LIAO2021
+studies[["Liao2021"]][["metadata_df"]] <- as.data.frame(
+  lapply(studies[["Liao2021"]][["metadata_df"]], function(x) {
+    x <- ifelse(x == "" | x == " ", NA, x)
+  }),
+  stringsAsFactors = FALSE
+)
+studies[["Liao2021"]][["metadata_df"]] <- studies[["Liao2021"]][["metadata_df"]] %>%
+  mutate(
+    PatientID = factor(PatientID),
+    Consistency = factor(replace_na(Consistency, "missing")),
+    Pool = as.numeric(Pool),
+    VanA = factor(replace_na(as.character(VanA), "missing"), levels = c("0", "1", "missing")),
+    Accession = as.character(Accession),
+    BioProject = as.character(BioProject),
+    Timepoint = as.integer(Timepoint),
+    DayRelativeToNearestHCT = as.integer(DayRelativeToNearestHCT)
+  )
+colSums(is.na(studies[["Liao2021"]][["metadata_df"]]))
+
+
+#STAMMLER2016
+studies[["Stammler2016"]][["metadata_df"]] <- as.data.frame(
+  lapply(studies[["Stammler2016"]][["metadata_df"]], function(x) {
+    x[x == ""] <- NA
+    x
+  }),
+  stringsAsFactors = FALSE
+)
+studies[["Stammler2016"]][["metadata_df"]] <- studies[["Stammler2016"]][["metadata_df"]] %>%
+  mutate(
+    Treatment = factor(Treatment),
+    BarcodeSequence = as.character(BarcodeSequence),
+    LinkerPrimerSequence = as.character(LinkerPrimerSequence),
+    ReversePrimer = as.character(ReversePrimer),
+    Description = as.integer(Description),
+    Dilution = as.numeric(replace(Dilution, is.na(Dilution), 0)),
+    Background = as.numeric(replace(Background, is.na(Background), 0))
+  )
+
+
+#VANDEPUTTE2017
+studies[["Vandeputte2017"]][["metadata_df"]] <- as.data.frame(
+  lapply(studies[["Vandeputte2017"]][["metadata_df"]], function(x) {
+    x[x == ""] <- NA
+    x
+  }),
+  stringsAsFactors = FALSE
+)
+studies[["Vandeputte2017"]][["metadata_df"]] <- studies[["Vandeputte2017"]][["metadata_df"]] %>%
+  mutate(
+    Sample = factor(Sample),
+    Cohort = factor(Cohort),
+    status = factor(status, levels = c("Control", "CD")), 
+    Enterotype = factor(Enterotype),
+    Health = factor(Health),
+    X.per = as.numeric(X.per)
+  ) %>%
+  mutate(
+    across(
+      c(Average.cell.count..per.gram.of.frozen.feces.,
+        STDEV.cell.count..per.gram.of.frozen.feces.,
+        cell, count, gram),
+      as.numeric
+    )
+  )
+
+
+#DREIER2022
+
+#GALAXY
+studies[["GALAXY (MLP Training data)"]][["metadata_df"]] <- studies[["GALAXY (MLP Training data)"]][["metadata_df"]] %>%
+  mutate(
+    cohort = factor(na_if(cohort, "")),
+    enterotype = factor(na_if(enterotype, ""))
+  )
+
+#METACARDIS
+studies[["MetaCardis (MLP Training data)"]][["metadata_df"]] <- studies[["MetaCardis (MLP Training data)"]][["metadata_df"]] %>%
+  mutate(
+    across(c(PatientGroup, CENTER, enterotype, cohort), 
+           ~ factor(na_if(., ""))),
+    Gender = factor(Gender, levels = 0:1, labels = c("Male", "Female")),
+    SMOKE = factor(SMOKE, levels = 0:1, labels = c("Non-smoker", "Smoker")),
+    pa_work_2cl = factor(pa_work_2cl),
+    across(c(BMI, AGE, aHEI, DASH, count), as.numeric),
+    DDS = as.integer(DDS)
+  )
+
+#MAROTZ2021
+studies[["Marotz2021"]][["metadata_df"]] <- studies[["Marotz2021"]][["metadata_df"]] %>%
+  mutate(
+    study_acronym = factor(study_acronym),
+    experiment_name = factor(experiment_name),
+    participant_id = factor(participant_id),
+    processing = factor(processing),
+    collection_time_stamp = as.POSIXct(collection_time_stamp, format = "%m/%d/%y %I:%M %p"),
+    gender = factor(gender),
+    mouthwash_regularly. = factor(mouthwash_regularly.),
+    Treatment_code = factor(Treatment_code),
+    Treatment_description = factor(Treatment_description),
+    Bite_nails. = factor(Bite_nails.),
+    Antibiotics_in_the_past_6_mo. = factor(Antibiotics_in_the_past_6_mo.),
+    On_any_medications. = factor(On_any_medications.),
+    Primary_water_source = factor(Primary_water_source),
+    
+    # Convert and order time-related factors
+    collection_description = ordered(collection_description, 
+                                   levels = c("before", "15min-later", "2hrs-later")),
+    
+    self_reported_min_brushing = ordered(self_reported_min_brushing,
+                                       levels = c("30 seconds", "30sec", "30sec - 2 mins",
+                                                  "1 min", "1.5 mins", "2 mins", 
+                                                  "2-3 mins", "3 mins", "4 mins", "5 mins"),
+                                       labels = c("30s", "30s", "30s-2m", "1m", "1.5m",
+                                                  "2m", "2-3m", "3m", "4m", "5m")),
+    How_often_brush_teeth. = ordered(How_often_brush_teeth.,
+                                   levels = c("1x day", "1x day, 6-8x week", "1-2x day",
+                                              "2x day", "2x day ", "2-3x day", "3x day"),
+                                   labels = c("1x", "1x", "1-2x", "2x", "2x", "2-3x", "3x")),
+    
+    How_often_drink_soda. = ordered(How_often_drink_soda.,
+                                  levels = c("never", "seldom", "almost never",
+                                             "less than once a month", "10 times a year",
+                                             "1x  month", "1x month", "2x month",
+                                             "1x week", "2x week", "3-5x week", "4x week")),
+    across(c(How_often_use_mouthwash., What_kind_of_mouthwash., 
+           Mouthwash_contains_alcohol., floss_regularly.),
+         ~ factor(na_if(., ""))),
+    Chew_gum._how_often._what_kind. = as.character(Chew_gum._how_often._what_kind.),
+    Any_other_details. = as.character(Any_other_details.),
+    across(where(is.numeric), ~ ifelse(. < 0, NA, .))
+  )
+
+#VIERA-SILVA2019
+studies[["Viera-Silva2019"]][["metadata_df"]] <- studies[["Viera-Silva2019"]][["metadata_df"]] %>%
+  mutate(
+    across(c(Diagnosis, Gender, `DMM Enterotype`), 
+           ~ factor(na_if(., ""))),
+    Gender = factor(Gender, 
+                   levels = c("F", "M"),
+                   labels = c("Female", "Male")),
+    BMI = as.numeric(BMI),
+    across(where(is.numeric), as.numeric)
+  )
+
+#CONTIJOCH2019
+studies[["Contijoch2019"]][["metadata_df"]] <- studies[["Contijoch2019"]][["metadata_df"]] %>%
+  mutate(
+    across(c(`Assay Type`, `condition_at_sampling`, Consent, 
+           `DATASTORE filetype`, `DATASTORE provider`, `DATASTORE region`,
+           LibraryLayout, LibrarySelection, LibrarySource, Platform,
+           experimental_group, geo_loc_name_country, geo_loc_name_country_continent,
+           Instrument, isolation_source, Organism, BioSampleModel),
+          ~ factor(na_if(., ""))),
+    ReleaseDate = as.POSIXct(ReleaseDate, format = "%Y-%m-%dT%H:%M:%SZ"),
+    create_date = as.POSIXct(create_date, format = "%Y-%m-%dT%H:%M:%SZ"),
+    across(c(Run, Experiment, BioSample, `Library Name`, ID), ~ factor(.)),
+    experimental_timepoint = ordered(experimental_timepoint),
+    across(c(microbial_density, sample_mass), as.numeric)
+  ) %>%
+  dplyr::select(-where(~ all(is.na(.))))
+colSums(is.na(studies[["Contijoch2019"]][["metadata_df"]]))
+colnames(is.na(studies[["Contijoch2019"]][["metadata_df"]]))
+
+#CONTIJOCH2019 16S
+studies[["Contijoch2019 16S"]][["metadata_df"]] <- studies[["Contijoch2019 16S"]][["metadata_df"]] %>%
+  mutate(
+    across(c(`Assay Type`, `condition_at_sampling`, Consent, 
+           `DATASTORE filetype`, `DATASTORE provider`, `DATASTORE region`,
+           LibraryLayout, LibrarySelection, LibrarySource, Platform,
+           experimental_group, geo_loc_name_country, geo_loc_name_country_continent, animal_id,
+           Instrument, isolation_source, Organism, BioSampleModel),
+          ~ factor(na_if(., ""))),
+    ReleaseDate = as.POSIXct(ReleaseDate, format = "%Y-%m-%dT%H:%M:%SZ"),
+    create_date = as.POSIXct(create_date, format = "%Y-%m-%dT%H:%M:%SZ"),
+    across(c(Run, Experiment, BioSample, `Library Name`, ID), ~ factor(.)),
+    experimental_timepoint = ordered(experimental_timepoint),
+    across(c(microbial_density, sample_mass), as.numeric)
+  ) %>%
+  dplyr::select(-where(~ all(is.na(.))))
+str(studies[["Contijoch2019 16S"]][["metadata_df"]])
+colnames(is.na(studies[["Contijoch2019 16S"]][["metadata_df"]]))
+
+#ALESSANDRI2024
+studies[["Alessandri2024"]][["metadata_df"]] <- studies[["Alessandri2024"]][["metadata_df"]] %>%
+  mutate(
+    Assay.Type = factor(Assay.Type),
+    BioProject = factor(BioProject),
+    BioSampleModel = factor(BioSampleModel),
+    env_broad_scale = factor(env_broad_scale, 
+                            levels = c("Fecal", "Vaginal swab")),
+    across(c(env_local_scale, env_medium, lat_lon),
+           ~ na_if(., "missing") %>% factor()),
+    treatmentfromlibraryname = ordered(treatmentfromlibraryname,
+                                      levels = c("control", "alpha-LA", "T0", "T1"),
+                                      labels = c("Control", "Alpha-LA", "Baseline", "Post-Treatment")),
+    
+    # Convert date columns
+    ReleaseDate = as.POSIXct(ReleaseDate, format = "%Y-%m-%dT%H:%M:%SZ"),
+    create_date = as.POSIXct(create_date, format = "%Y-%m-%dT%H:%M:%SZ"),
+    Collection_Date = as.Date(paste0(Collection_Date, "-01")),
+    across(c(Run, BioSample, Experiment, Library.Name), factor),
+    across(c(AvgSpotLen, Bases, Bytes, `Sequenced reads`, FASTQ_Reads),
+          as.numeric),
+  )
+
+#MAGHINI2023
+studies[["Maghini2023"]][["metadata_df"]] <- studies[["Maghini2023"]][["metadata_df"]] %>%
+  mutate(
+    across(c(Assay.Type, BioProject, BioSampleModel, Consent,
+             DATASTORE.filetype, DATASTORE.provider, DATASTORE.region,
+             geo_loc_name_country, geo_loc_name_country_continent,
+             Instrument, isolation_source, LibraryLayout, LibrarySelection,
+             LibrarySource, Organism, Platform, Type),
+           ~ factor(na_if(., ""))),
+    
+    Donor = factor(Donor),
+    Condition = factor(Condition),
+    Device = factor(Device, levels = c("No preservative", "Zymo", "OMNIgene"), ordered = TRUE),
+    Replicate = factor(Replicate),
+    ReleaseDate = as.POSIXct(ReleaseDate, format = "%Y-%m-%dT%H:%M:%SZ"),
+    create_date = as.POSIXct(create_date, format = "%Y-%m-%dT%H:%M:%SZ"),
+    Collection_Date = as.Date(paste0(Collection_Date, "-01-01")),
+    across(c(Run, BioSample, Experiment, Sample.Name), factor),
+    across(c(AvgSpotLen, Bases, Bytes, FASTQ_Reads), as.numeric),
+    samp_collect_device = factor(replace_na(na_if(samp_collect_device, ""), "Unknown")),
+    samp_mat_process = ordered(case_when(
+      grepl("-80", samp_mat_process) ~ "-80C",
+      grepl("23", samp_mat_process) ~ "23C",
+      grepl("40", samp_mat_process) ~ "40C",
+      TRUE ~ NA_character_
+    ), levels = c("-80C", "23C", "40C"))
+  )
+
+listofstudies = names(studies)
+to_remove <- c(
+  "Vandeputte2021 (MLP Training data)", 
+  "GALAXY (MLP Training data)", 
+  "Contijoch2019 16S",
+  "VandeVelde2022",
+  "Pereira2023",
+  "Krawczyk2022",
+  "Liao2021",
+  "Stammler2016",
+  "Vandeputte2017",
+  "Dreier2022",
+  "MetaCardis (MLP Training data)"
+)
+
+listofstudies <- listofstudies[!listofstudies %in% to_remove]
+
+library(devtools)
+load_all("processedandfinalcomparisons/ALDEx3")
+library(DESeq2)
+library(limma)
+
+for (study_name in listofstudies) {
+  sequencing_type <- unique(datasets[datasets$dataset_name == study_name, "sequencingtype"])
+  if (length(sequencing_type) > 1) {
+    sequencing_type <- sequencing_type[1]
+  }
+
+  result <- process_study_with_benchmarks(study_name, studies[[study_name]], sequencing_type)
+  if (!is.null(result)) {
+     saveRDS(result, file.path(paste0(study_name, ".rds")))
+  }
+}
+
+df_list <- list()
+for (name in names(studies)) {
+  file_path <- paste0(name, ".rds")
+  
+  if (file.exists(file_path)) {
+    df_list[[name]] <- readRDS(file_path)
+  } else {
+    message("Skipping missing file: ", file_path)
+  }
+}
+
+
+##### Can delete after re run
+preprocess_nested_df_list <- function(nested_df_list) {
+  library(dplyr)
+  
+  # Iterate over each study in the nested_df_list
+  processed_list <- lapply(names(nested_df_list), function(study) {
+    study_models <- nested_df_list[[study]]
+    
+    # Iterate over each model in the study
+    processed_models <- lapply(names(study_models), function(model) {
+      df <- study_models[[model]]
+      
+      # Check if the model is deseq2_1e09 or limma_1e09
+      if (model %in% c("DESeq2", "limma")) {
+        # Rename 'method' column to 'scale_label' if it exists
+        if ("method" %in% colnames(df)) {
+          df <- df %>% rename(scale_label = method)
+        }
+        # Add or update the gamma column with 1e09 for all rows
+        df <- df %>%
+          mutate(
+            feature = paste0("V", feature),  # Append "V" to feature
+            gamma = "1e09"
+          )
+      }
+      
+      return(df)
+    })
+    
+    # Preserve the model names
+    names(processed_models) <- names(study_models)
+    
+    return(processed_models)
+  })
+  
+  # Preserve the study names
+  names(processed_list) <- names(nested_df_list)
+  
+  return(processed_list)
+}
+
+df_list = preprocess_nested_df_list(df_list)
+
+############
+
+library(testthat)
+test_file("tests/testthat/unittest.R")
+
+categorical_df2 <- categorical_df %>%
+  dplyr::select(Study, RowLabel_Model,  Feature, Value) %>%
+  distinct(Study, RowLabel_Model,  Feature, .keep_all = TRUE) %>% 
+  pivot_wider(
+    id_cols = c(Study, RowLabel_Model),
+    names_from = Feature,
+    values_from = Value
+  ) %>%
+  mutate(
+    Study = as.character(Study),
+    RowLabel_Model = as.character(RowLabel_Model)
+  )
+
+# result <- aldex3_conf_matrix(df_list, categorical_df, alpha = 0.05, plot_value = "count", split_by = "sequencingtype")
+# ggsave("plots/shotgunmetagenomics_aldex3_final.png", plot = result$subset_plots$`shotgun metagenomics`, width = 15, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+# ggsave("plots/amplicon_aldex3_final.png", plot = result$subset_plots$`16S rRNA`, width = 30, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+# 
+# 
+# result <- aldex3_conf_matrix(df_list, categorical_df, alpha = 0.05, plot_value = "count", split_by = "custom")
+# ggsave("plots/humanfecalflow_shotgunmetagenomics_aldex3_final.png", plot = result$subset_plots$human_fecal_fc_shotgun, width = 8, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+# ggsave("plots/humanfecalflow_amplicon_aldex3_final.png", plot = result$subset_plots$human_fecal_fc_16s, width = 15, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+# ggsave("plots/nothumanfecal_amplicon_aldex3_final.png", plot = result$subset_plots$not_both_human_fecal_16s, width = 20, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+# ggsave("plots/nothumanfecal_shotgun_aldex3_final.png", plot = result$subset_plots$not_both_human_fecal_shotgun, width = 15, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+# 
+# ggsave("plots/shotgunmetagenomics_aldex3_final.png", plot = result$plot_galaxy_metacardis, width = 20, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+# ggsave("plots/amplicon_aldex3_final.png", plot = result$plot_vandeputte, width = 30, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+
+result <- aldex3_conf_matrix(
+  nested_df_list = df_list,
+  categorical_df = categorical_df2,
+  true_model = "Measured_1e09",
+  compare_models = c("MetaCardis_1e09", "GALAXY_1e09", "ALDEx3_0.5", "DESeq2_1e09", "limma_1e09", "vandeputte_1e09"),
+  alpha = 0.05,
+  plot_value = "count",
+  split_by = "custom"
+)
+
+ggsave("plots/shotgunmetagenomics_aldex3_final.png", plot = result$subset_plots$`shotgun metagenomics`, width = 15, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+ggsave("plots/amplicon_aldex3_final.png", plot = result$subset_plots$`16S rRNA`, width = 30, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+
+
+metrics_df <- result$metrics_long %>%
+  filter(!grepl("^Measured", Model)) %>%
+  mutate(
+    model_prefix = gsub("_.*", "", Model) 
+  ) %>%
+  left_join(
+    categorical_df2 %>%
+      dplyr::select(Study, sequencingtype, trainingset) %>%
+      distinct() %>%  
+      rename(model_prefix = trainingset),  
+    by = c("Study", "model_prefix")
+  ) %>%
+  mutate(
+    trainingset = model_prefix,
+    model_prefix = NULL  
+  ) %>%
+  mutate(
+    Model = gsub("_(\\S+)", " (\\1)", Model),
+    Model = factor(Model, levels = unique(Model))
+  ) %>%
+  group_by(Study, Model) %>%
+  mutate(
+    total = sum(Value[Metric %in% c("TP", "TN", "FP", "FN")], na.rm = TRUE),
+    Value = ifelse(Metric %in% c("TP", "TN", "FP", "FN") & total > 0, 
+                   (Value / total) * 100, 
+                   Value)
+  ) %>%
+  ungroup() %>%
+  left_join(
+    categorical_df2 %>%
+      dplyr::select(Study, sequencingtype) %>%
+      distinct() %>% 
+      group_by(Study) %>%
+      slice(1) %>%  
+      ungroup(),
+    by = "Study",
+    suffix = c("", "_impute")
+  ) %>%
+  mutate(
+    sequencingtype = coalesce(sequencingtype, sequencingtype_impute),
+    sequencingtype_impute = NULL  
+  ) %>%
+  dplyr::select(Study, Model, Metric, Value,sequencingtype) %>%
+  pivot_wider(names_from = Metric, values_from = Value) %>%
+  mutate(
+    across(c(TP, TN, FP, FN), as.numeric), 
+    Total = TP + TN + FP + FN,
+    Accuracy = ifelse(Total > 0, (TP + TN) / Total * 100, NA),
+    Precision = ifelse((TP + FP) > 0, TP / (TP + FP) * 100, NA),
+    Recall = ifelse((TP + FN) > 0, TP / (TP + FN) * 100, NA),
+    Specificity = ifelse((TN + FP) > 0, TN / (TN + FP) * 100, NA),
+    F1_score = ifelse((Precision + Recall) > 0, 
+                      2 * (Precision * Recall) / (Precision + Recall), NA),
+    PPV = ifelse((TP + FP) > 0, TP / (TP + FP) * 100, NA),  
+    NPV = ifelse((TN + FN) > 0, TN / (TN + FN) * 100, NA),
+    Sensitivity = Recall,  
+    FDR = ifelse((TP + FP) > 0, FP / (TP + FP) * 100, NA),
+    FNR = ifelse((TP + FN) > 0, FN / (TP + FN) * 100, NA),
+    FPR = ifelse((FP + TN) > 0, FP / (FP + TN) * 100, NA),
+    FOR = ifelse((FN + TN) > 0, FN / (FN + TN) * 100, NA),
+    BalancedAccuracy = ifelse(!is.na(Recall) & !is.na(Specificity), 
+                             (Recall + Specificity) / 2, NA),
+    YoudenJ = ifelse(!is.na(Recall) & !is.na(Specificity), 
+                     Recall + Specificity - 100, NA),
+    MCC = ifelse(
+      (TP + FP) > 0 & (TP + FN) > 0 & (TN + FP) > 0 & (TN + FN) > 0,
+      (TP * TN - FP * FN) /
+        sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN)) * 100,
+      NA
+    )
+  ) %>%
+  pivot_longer(
+    cols = c(
+      PPV, NPV, Sensitivity, FDR,
+      Accuracy, Precision, Recall, F1_score, Specificity,
+      FNR, FPR, FOR, BalancedAccuracy, YoudenJ, MCC
+    ),
+    names_to = "Metric",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    gamma = gsub(".*\\((.*)\\)", "\\1", Model),
+    model_type = gsub(" \\(.*\\)", "", Model),
+    model_type = sub("^([a-zA-Z])", "\\U\\1", model_type, perl = TRUE),
+    gamma = factor(gamma, levels = c("1e09", "0.5", "1", "5"))
+  )
+
+p_split <- aldex_boxplot(metrics_df, split_by_seqtype = FALSE, metrics = c("PPV", "NPV","FDR", "Sensitivity", "Specificity", "FNR", "FPR"))
+ggsave("plots/model_performance_boxplot.pdf", plot = p_split, width = 15, height = 12, device = cairo_pdf)
+
+p_split <- aldex_boxplot(metrics_df, split_by_seqtype = TRUE)
+ggsave("plots/model_performance_boxplot_16S.pdf", plot = p_split$`16S rRNA`, width = 15, height = 20, device = cairo_pdf)
+ggsave("plots/model_performance_boxplot_shotgun.pdf", plot = p_split$`shotgun metagenomics`, width = 15, height = 20, device = cairo_pdf)
+
+p_split <- aldex_scatterplot(metrics_df, split_by_seqtype = FALSE, metrics = c("PPV", "NPV","FDR", "Sensitivity", "Specificity", "FNR", "FPR"))
+ggsave("plots/model_performance_scatter.pdf", plot = p_split, width = 15, height = 15, device = cairo_pdf)
+
+p_split <- aldex_metriclineplot(metrics_df, split_by_seqtype = FALSE)
+ggsave("plots/model_performance_lineplot.pdf", plot = p_split, width = 10, height = 10, device = cairo_pdf)
+
+# p_split <- aldex_lineplot(metrics_df, split_by_seqtype = TRUE)
+# ggsave("plots/model_performance_lineplot_16S.pdf", plot = p_split$`16S rRNA`, width = 15, height = 20, device = cairo_pdf)
+# ggsave("plots/model_performance_lineplot_shotgun.pdf", plot = p_split$`shotgun metagenomics`, width = 15, height = 20, device = cairo_pdf)
+# 
+# 
+# # Prepare data
+# fdr_sens_df <- metrics_df %>%
+#   filter(Metric %in% c("Sensitivity", "FDR")) %>%
+#   pivot_wider(names_from = Metric, values_from = Value) %>%
+#   filter(!is.na(FDR), !is.na(Sensitivity)) %>%
+#   mutate(
+#     gamma_display = recode(gamma, "1e09" = "0"),  # for legend
+#     gamma_numeric = case_when(
+#       gamma == "1e09" ~ 0,
+#       gamma == "0.5"  ~ 0.5,
+#       gamma == "1"    ~ 1,
+#       gamma == "5"    ~ 5,
+#       TRUE            ~ NA_real_
+#     ),
+#     gamma = gamma_display  # if you want to relabel in shape legend
+#   )
+# 
+# # Plot
+# fdr_sens_plot <- ggplot(fdr_sens_df, aes(x = FDR, y = Sensitivity)) +
+#   geom_line(
+#     aes(group = interaction(model_type, Study, sequencingtype), color = model_type),
+#     linewidth = 0.8, alpha = 0.5
+#   ) +
+#   geom_point(aes(color = model_type, shape = gamma), size = 3) +
+#   facet_grid(sequencingtype ~ Study) +
+#   scale_x_continuous(limits = c(0, 100), expand = expansion(mult = c(0.01, 0.05))) +
+#   scale_y_continuous(limits = c(0, 100), expand = expansion(mult = c(0.01, 0.05))) +
+#   scale_color_brewer(palette = "Dark2") +
+#   scale_shape_manual(
+#     values = c("0" = 16, "0.5" = 17, "1" = 15, "5" = 18),
+#     breaks = c("0", "0.5", "1", "5")
+#   ) +
+#   labs(
+#     title = "Differential Abundance",
+#     subtitle = "Model trajectories across gamma values (Truth: Measured, SD = 0.5)",
+#     x = "False Discovery Rate (%)",
+#     y = "Sensitivity (%)",
+#     color = "Model",
+#     shape = "Gamma"
+#   ) +
+#   theme_minimal(base_size = 16) +
+#   theme(
+#     plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+#     plot.subtitle = element_text(size = 16, hjust = 0.5, color = "gray30", margin = margin(b = 10)),
+#     axis.title = element_text(size = 16),
+#     axis.text = element_text(size = 13),
+#     strip.text = element_text(size = 14, face = "bold"),
+#     strip.background = element_rect(fill = "gray95", color = NA),
+#     panel.grid.major = element_line(color = "gray90"),
+#     panel.grid.minor = element_blank(),
+#     legend.title = element_text(size = 14, face = "bold"),
+#     legend.text = element_text(size = 12),
+#     legend.key.size = unit(0.7, "cm"),
+#     legend.position = "right",
+#     plot.background = element_rect(fill = "white", color = NA)
+#   )
+# 
+# ggsave("plots/fdr_vs_sensitivity_cellready.pdf", plot = fdr_sens_plot, 
+#        width = 15, height = 8, units = "in", dpi = 600, device = cairo_pdf)
+
+
+
+
+
+```
+
+```{r scalemodeling}
+
+for (study_name in listofstudies) {
+  sequencing_type <- unique(datasets[datasets$dataset_name == study_name, "sequencingtype"])
+  if (length(sequencing_type) > 1) {
+    sequencing_type <- sequencing_type[1]
+  }
+  message(paste0(study_name))
+  result <- process_study_with_lm_scale(study_name, studies[[study_name]], sequencing_type)
+  if (!is.null(result)) {
+     saveRDS(result, file.path(paste0("modelingscale_",study_name, ".rds")))
+  }
+}
+
+df_list <- list()
+for (name in names(studies)) {
+  file_path <- paste0("modelingscale_",name, ".rds")
+  
+  if (file.exists(file_path)) {
+    df_list[[name]] <- readRDS(file_path)
+  } else {
+    message("Skipping missing file: ", file_path)
+  }
+}
+
+# Presentation mode
+result = modelingscale_table_plot(
+  df_list,
+  presentation = list(
+    VandeVelde2022 = list(
+      measured = c("X_matPrefixR1"),
+      vandeputte = c("X_matPrefixR1")
+    ),
+    Pereira2023 = list(
+      measured = c("X_matconditionENT_HI"),
+      vandeputte = c("X_matconditionENT_HI")
+    ),
+    Liao2021 = list(
+      measured = c("X_matVanA1"),
+      vandeputte = c("X_matVanA1")
+    ),
+    Stammler2016 = list(
+      measured = c("X_matDilution"),
+      vandeputte = c("X_matDilution")
+    ),
+    Vandeputte2017 = list(
+      measured = c("X_matstatusControl"),
+      vandeputte = c("X_matstatusControl")
+    ),
+    Marotz2021 = list(
+      measured = c("X_matTreatment_codeB"),
+      vandeputte = c("X_matTreatment_codeB")
+    ),
+    Contijoch2019 = list(
+      measured = c("X_matexperimental_timepoint.L"),
+      GALAXY = c("X_matexperimental_timepoint.L")
+    ),
+    Alessandri2024 = list(
+      measured = c("X_mattreatmentfromlibraryname.L"),
+      GALAXY = c("X_mattreatmentfromlibraryname.L")
+    ),
+    Maghini2023 = list(
+      measured = c("X_matDevice.Q"),
+      GALAXY = c("X_matDevice.Q")
+    )
+  )
+)
+ggsave("plots/scalemodel_JS_presentation.pdf", plot = result$p, width = 5, height = 8, units = "in", dpi = 600, device = cairo_pdf ,  bg = "white",limitsize = FALSE)
+ggsave("plots/scalemodel_JS_presentation.png", plot = result$p, width = 5, height = 8, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+
+
+result <- modelingscale_table_plot(df_list)
+ggsave("plots/scalemodel_final.png", plot = result$p, width = 30, height = 10, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+
+result <- modelingscale_arrow_plot(df_list, datasets, model_include=c("vandeputte", "GALAXY", "MetaCardis"))
+ggsave("plots/scalemodel_betas.png", plot = result$betaplot, width = 8, height = 24, units = "in", dpi = 600, bg = "white",limitsize = FALSE)
+
+plot_measured_vs_predicted(studies)
+plot_residuals(studies)
+
+
+```
+
+```{r Training XGBoost Model}
+
+library(xgboost)  # v1.7.5.1
+library(caret)    # v6.0-94
+library(dplyr)    # For data manipulation
+library(vegan)    # For Shannon diversity calculation
+library(purrr)    # For list operations
+library(stringr)  # For string manipulation
+
+set.seed(123)
+
+calc_shannon <- function(abundances) {
+  diversity(abundances, index = "shannon")
+}
+
+# OPTIONS: 
+
+# Exact Replication: If we want our models to match theirs as closely as possible (e.g., same feature counts as Galaxy or MetaCardis), we should filter per study first (Option 1), then combine and train. This ensures taxa meet thresholds within their original context before being unified.
+# Generalization: If we’re building new, broader models (e.g., a "Shotgun all" that generalizes across all shotgun studies), keeping the current approach (Option 2) is fine, accepting that feature counts may differ due to the larger, more diverse dataset.
+# Given we’re adding studies and aiming to replicate their methodology (not necessarily their exact feature sets), Option 1 is closer to their process
+
+
+# OPTION 1 - Filter each study before concatenating each study 
+
+# create_model_df <- function(studies, categorical_df, seq_type, org_type = NULL, sam_type = NULL) {
+#   if (is.null(org_type)) {
+#     study_ids <- categorical_df %>% 
+#       filter(sequencingtype == seq_type) %>% 
+#       pull(Study)
+#   } else {
+#     study_ids <- categorical_df %>% 
+#       filter(sequencingtype == seq_type & organismtype == org_type & sampletype == sam_type) %>% 
+#       pull(Study)
+#   }
+#   
+#   relevant_studies <- studies[names(studies) %in% study_ids]
+#   filtered_dfs <- map(relevant_studies, function(study) {
+#     relabun <- study$relabun_df
+#     load <- study$measured_load_df$MeasuredLoad
+#     colnames(relabun) <- str_replace(colnames(relabun), "unassigned", "-1")
+#     avg_abundance <- colMeans(relabun)
+#     prevalence <- colMeans(relabun > 0)
+#     keep_species <- (avg_abundance >= 0.001) & (prevalence >= 0.1)
+#     filtered_relabun <- relabun[, keep_species, drop = FALSE]
+#     
+#     filtered_relabun$microbial_load <- load
+#     return(filtered_relabun)
+#   })
+#   all_features <- map(filtered_dfs, ~ colnames(.x) %>% setdiff("microbial_load")) %>% 
+#     unlist() %>% 
+#   model_df <- map_dfr(filtered_dfs, function(df) {
+#     missing_features <- setdiff(all_features, colnames(df) %>% setdiff("microbial_load"))
+#     if (length(missing_features) > 0) {
+#       df[missing_features] <- 0
+#     }
+#     df <- df[, c(all_features, "microbial_load"), drop = FALSE]
+#     return(df)
+#   })
+#   return(model_df)
+# }
+# 
+# train_model <- function(data_subset, model_name, include_shannon = FALSE, cv_repeats = 5) {
+#   if (include_shannon) {
+#     data_subset$`Shannon diversity` <- apply(data_subset %>% select(-microbial_load), 1, calc_shannon)
+#   }
+#   filtered_data <- data_subset
+#   min_nonzero <- min(filtered_data[, -ncol(filtered_data)][filtered_data[, -ncol(filtered_data)] > 0], na.rm = TRUE)
+#   filtered_data[, -ncol(filtered_data)] <- filtered_data[, -ncol(filtered_data)] + (min_nonzero / 2)
+#   filtered_data[, -ncol(filtered_data)] <- log10(filtered_data[, -ncol(filtered_data)])
+#   filtered_data$microbial_load <- log10(filtered_data$microbial_load)
+#   preProc <- preProcess(filtered_data[, -ncol(filtered_data)], method = c("center", "scale"))
+#   filtered_data[, -ncol(filtered_data)] <- predict(preProc, filtered_data[, -ncol(filtered_data)])
+#   train_features <- as.matrix(filtered_data[, -ncol(filtered_data)])
+#   train_target <- filtered_data$microbial_load
+#   train_control <- trainControl(
+#     method = "repeatedcv",
+#     number = 10,
+#     repeats = cv_repeats,
+#     verboseIter = TRUE
+#   )
+#   tune_grid <- expand.grid(
+#     nrounds = c(100, 500, 1000),
+#     max_depth = c(3, 4, 5),
+#     eta = c(0.01, 0.05, 0.1),
+#     gamma = 0.01,
+#     colsample_bytree = 0.75,
+#     min_child_weight = 1,
+#     subsample = 1
+#   )
+#   xgb_model <- train(
+#     x = train_features,
+#     y = train_target,
+#     method = "xgbTree",
+#     trControl = train_control,
+#     tuneGrid = tune_grid,
+#     metric = "RMSE",
+#     maximize = FALSE,
+#     verbosity = 1
+#   )
+#   if (sum(grepl("^ref_mOTU", colnames(train_features))) > 10) {
+#     xgb_model$finalModel$xNames <- str_remove(xgb_model$finalModel$xNames, ".* \\[") %>% str_remove("\\]")
+#     xgb_model$finalModel$feature_names <- str_remove(xgb_model$finalModel$feature_names, ".* \\[") %>% str_remove("\\]")
+#     colnames(xgb_model$trainingData) <- str_remove(colnames(xgb_model$trainingData), ".* \\[") %>% str_remove("\\]")
+#     message(paste("INFO: Adjusted species names in", model_name, "for mOTUs consistency."))
+#   }
+#   saveRDS(xgb_model, paste0(model_name, "_xgb_model.RDS"))
+#   preds <- predict(xgb_model, train_features)
+#   rmse <- sqrt(mean((train_target - preds)^2))
+#   cat(paste("RMSE for", model_name, ":", rmse, "\n"))
+#   
+#   return(xgb_model)
+# }
+
+
+# OPTION 2 - Filter based on their criteria AFTER combining studies
+
+create_model_df <- function(studies, categorical_df, seq_type, org_type = NULL, sam_type = NULL) {
+  if (is.null(org_type)) {
+    study_ids <- categorical_df %>% 
+      filter(sequencingtype == seq_type) %>% 
+      pull(Study)
+  } else {
+    study_ids <- categorical_df %>% 
+      filter(sequencingtype == seq_type & organismtype == org_type & sampletype == sam_type) %>% 
+      pull(Study)
+  }
+  relevant_studies <- studies[names(studies) %in% study_ids]
+  all_features <- map(relevant_studies, ~ colnames(.x$relabun_df)) %>% 
+    unlist() %>% 
+    unique()
+  model_df <- map_dfr(relevant_studies, function(study) {
+    relabun <- study$relabun_df
+    load <- study$measured_load_df$MeasuredLoad
+    missing_features <- setdiff(all_features, colnames(relabun))
+    if (length(missing_features) > 0) {
+      relabun[missing_features] <- 0
+    }
+    relabun <- relabun[, all_features, drop = FALSE]
+    relabun$microbial_load <- load
+    return(relabun)
+  })
+  return(model_df)
+}
+
+train_model <- function(data_subset, model_name, include_shannon = FALSE, cv_repeats = 5) {
+  colnames(data_subset) <- str_replace(colnames(data_subset), "unassigned", "-1")
+  if (include_shannon) {
+    data_subset$`Shannon diversity` <- apply(data_subset %>% select(-microbial_load), 1, calc_shannon)
+  }
+  species_cols <- data_subset %>% select(-microbial_load, -`Shannon diversity`, everything())
+  avg_abundance <- colMeans(species_cols)
+  prevalence <- colMeans(species_cols > 0)
+  keep_species <- (avg_abundance >= 0.001) & (prevalence >= 0.1)
+  filtered_data <- species_cols[, keep_species]
+  if (include_shannon) {
+    filtered_data$`Shannon diversity` <- data_subset$`Shannon diversity`
+  }
+  filtered_data$microbial_load <- data_subset$microbial_load
+  min_nonzero <- min(filtered_data[, -ncol(filtered_data)][filtered_data[, -ncol(filtered_data)] > 0])
+  filtered_data[, -ncol(filtered_data)] <- filtered_data[, -ncol(filtered_data)] + (min_nonzero / 2)
+  filtered_data[, -ncol(filtered_data)] <- log10(filtered_data[, -ncol(filtered_data)])
+  filtered_data$microbial_load <- log10(filtered_data$microbial_load)
+  preProc <- preProcess(filtered_data[, -ncol(filtered_data)], method = c("center", "scale"))
+  filtered_data[, -ncol(filtered_data)] <- predict(preProc, filtered_data[, -ncol(filtered_data)])
+  train_features <- as.matrix(filtered_data[, -ncol(filtered_data)])
+  train_target <- filtered_data$microbial_load
+  train_control <- trainControl(
+    method = "repeatedcv",
+    number = 10,
+    repeats = cv_repeats,  # 10 for 16S_rRNA, 5 for others -- matching Microbial Load Predictor
+    verboseIter = TRUE
+  )
+  
+  # Define hyperparameter grid (matched to their ranges)
+  tune_grid <- expand.grid(
+    nrounds = c(100, 500, 1000),
+    max_depth = c(3, 4, 5),
+    eta = c(0.01, 0.05, 0.1),
+    gamma = 0.01,
+    colsample_bytree = 0.75,
+    min_child_weight = 1,
+    subsample = 1
+  )
+  
+  # Train the model
+  xgb_model <- train(
+    x = train_features,
+    y = train_target,
+    method = "xgbTree",
+    trControl = train_control,
+    tuneGrid = tune_grid,
+    metric = "RMSE",
+    maximize = FALSE,
+    verbosity = 1
+  )
+  
+  # Adjust species names if mOTUs IDs are detected (>10 columns with "ref_mOTU")
+  if (sum(grepl("^ref_mOTU", colnames(train_features))) > 10) {
+    xgb_model$finalModel$xNames <- str_remove(xgb_model$finalModel$xNames, ".* \\[") %>% str_remove("\\]")
+    xgb_model$finalModel$feature_names <- str_remove(xgb_model$finalModel$feature_names, ".* \\[") %>% str_remove("\\]")
+    colnames(xgb_model$trainingData) <- str_remove(colnames(xgb_model$trainingData), ".* \\[") %>% str_remove("\\]")
+    message(paste("INFO: Adjusted species names in", model_name, "for mOTUs consistency."))
+  }
+
+  saveRDS(xgb_model, paste0(model_name, "_xgb_model.RDS"))
+  preds <- predict(xgb_model, train_features)
+  rmse <- sqrt(mean((train_target - preds)^2))
+  cat(paste("RMSE for", model_name, ":", rmse, "\n"))
+  
+  return(xgb_model)
+}
+
+# train models
+shotgun_df <- create_model_df(studies, categorical_df, "shotgun metagenomics")
+shotgun_model <- train_model(shotgun_df, "shotgun_all", include_shannon = TRUE, cv_repeats = 5)
+
+sixteenS_df <- create_model_df(studies, categorical_df, "16S rRNA")
+sixteenS_model <- train_model(sixteenS_df, "16S_all", include_shannon = FALSE, cv_repeats = 10)
+
+shotgun_fecal_df <- create_model_df(studies, categorical_df, "shotgun metagenomics", "human", "fecal")
+shotgun_fecal_model <- train_model(shotgun_fecal_df, "shotgun_human_fecal", include_shannon = TRUE, cv_repeats = 5)
+
+sixteenS_fecal_df <- create_model_df(studies, categorical_df, "16S rRNA", "human", "fecal")
+sixteenS_fecal_model <- train_model(sixteenS_fecal_df, "16S_human_fecal", include_shannon = FALSE, cv_repeats = 10)
+
+# View best hyperparameters for each model
+print(shotgun_model$bestTune)
+print(sixteenS_model$bestTune)
+print(shotgun_fecal_model$bestTune)
+print(sixteenS_fecal_model$bestTune)
+
+```
+
+```{r}
+
+# 
+# library(tidyplots)
+# library(rlang)
+# 
+# 
+# # Loop over studies
+# for (study_name in names(studies)) {
+#   study <- studies[[study_name]]
+#   
+#   # Skip if no metadata
+#   if (is.null(study$metadata_df)) next
+#   
+#   message(paste("Processing study:", study_name))
+#   
+#   ## Prepare metadata
+#   metadata_df <- cbind("SampleID" = rownames(study$metadata_df), study$metadata_df)
+#   rownames(metadata_df) <- NULL  
+#   # Get the metadata column that corresponds to the condition (e.g. "DiseaseStatus")
+#   condition <- unique(datasets[datasets$dataset_name == study_name & datasets$abundance == 'metadata', "condition"])
+#   
+#   # Keep only SampleID and condition
+#   metadata <- metadata_df[, c("SampleID", condition)]
+#   
+#   relabun_df <- study$relabun_df
+#   ## Load the load values per sample
+#   
+#   # Measured load
+#   measured_data <- study$measured_load_df %>%
+#     dplyr::mutate(Type = "Measured") %>%
+#     dplyr::select(SampleID, MeasuredLoad, Type)
+#   
+#   # For shotgun metagenomics, there are two predicted load data sets.
+#   if (unique(datasets[datasets$dataset_name == study_name, "sequencingtype"]) == "shotgun metagenomics") {
+#     galaxy <- study$galaxypredicted_load_df %>%
+#       dplyr::mutate(Type = "Galaxy") %>%
+#       dplyr::select(SampleID, PredictedLoad, Type)
+#     
+#     metacardis <- study$metacardispredicted_load_df %>%
+#       dplyr::mutate(Type = "Metacardis") %>%
+#       dplyr::select(SampleID, PredictedLoad, Type)
+#     
+#     combined_data <- bind_rows(galaxy, metacardis)
+#   } else {
+#     combined_data <- study$predicted_load_df %>%
+#       dplyr::mutate(Type = "Vandeputte") %>%
+#       dplyr::select(SampleID, PredictedLoad, Type)
+#   }
+#   
+#   # Rename the load column so that measured and predicted data have the same name.
+#   measured_data <- measured_data %>% dplyr::rename(LoadValue = MeasuredLoad)
+#   combined_data <- combined_data %>% dplyr::rename(LoadValue = PredictedLoad)
+#   
+#   # Combine all load data (so a sample might have two or three rows, one per load type)
+#   load_data <- bind_rows(measured_data, combined_data)
+#   
+#   # Merge in the metadata so that each sample’s load value also has the condition info.
+#   load_data <- left_join(load_data, metadata, by = "SampleID")
+#   
+# 
+#   relabun_df$SampleID <- rownames(relabun_df)
+#   rownames(relabun_df) <- NULL
+# 
+#   study_relabun_df <- relabun_df %>% 
+#     dplyr::filter(SampleID %in% metadata$SampleID)
+#   
+#   # Pivot the wide relative abundance matrix to a long format: one row per sample per taxon.
+#   study_relabun_long <- study_relabun_df %>%
+#     pivot_longer(cols = -SampleID, 
+#                  names_to = "Taxon", 
+#                  values_to = "RelAbun")
+#   
+#   ## Join load and taxon data so that each sample, for each load type, gets a taxon-level relative abundance.
+#   # Because load_data is one row per SampleID and load type and study_relabun_long is one row per SampleID and taxon,
+#   # the join produces a row for each combination.
+#   abs_abun_df <- left_join(load_data, study_relabun_long, by = "SampleID")
+#   
+#   abs_abun_df$LoadValue = 10^abs_abun_df$LoadValue
+#   
+#   # Compute the absolute abundance per taxon as: (relative abundance) x (total load)
+#   abs_abun_df <- abs_abun_df %>%
+#     dplyr::mutate(AbsAbundance = RelAbun * LoadValue)
+#   
+#   abs_abun_df |>
+#     tidyplot(x = !!(sym(condition)), y = AbsAbundance, color = Taxon) |>
+#     add_barstack_absolute() |>
+#     split_plot(by = c(Type)) |> 
+#     save_plot(paste(study_name,"absoluteabundancecomparison.png"), limitsize = FALSE)
+#   
+# } 
+
+
+
+```
+
+
+```{r global dataset}
+# 
+# # Load required libraries
+# library(ggplot2)
+# 
+# # Define input and output directories
+# input_dir <- "counts/"   # Folder containing the original datasets
+# output_dir <- "processedandfinalcomparisons/"   # Folder to save results
+# 
+# # Ensure output directory exists
+# if (!dir.exists(output_dir)) {
+#     dir.create(output_dir)
+# }
+# 
+# # List all input files
+# input_files <- list.files(path = input_dir, pattern = "^Global_2024_.*_shotgunmetagenomics\\.csv$", full.names = TRUE)
+# 
+# # Define hyperparameter values
+# abundance_thresholds <- c(0, 0.001, 0.002, 0.003)  # 0%, 0.1%, 0.2%, 0.3%
+# prevalence_thresholds <- c(0, 0.1, 0.2, 0.3)  # 0%, 10%, 20%, 30%
+# 
+# # Initialize list to store all results
+# results_list <- list()
+# 
+# # Function to preprocess data
+# preprocess_data <- function(data, abundance_threshold, prevalence_threshold) {
+#     # Remove rows and columns that sum to 0
+#     data <- data[rowSums(data) > 0, ]
+#     data <- data[, colSums(data) > 0]
+# 
+#     # Calculate average abundance and prevalence for each feature (column)
+#     avg_abundance <- colMeans(data)  # Average abundance
+#     prevalence <- colSums(data > 0) / nrow(data)  # Prevalence percentage
+# 
+#     # Filter based on thresholds
+#     data <- data[, avg_abundance >= abundance_threshold & prevalence >= prevalence_threshold]
+# 
+#     return(data)
+# }
+# 
+# 
+# # Define input directories
+# counts_dir <- "counts/"   # Directory for raw relative abundance data
+# metadata_dir <- "metadata/"  # Directory for metadata files
+# output_dir <- "predictions/"   # Where the RDS file will be saved
+# 
+# # Ensure output directory exists
+# if (!dir.exists(output_dir)) {
+#     dir.create(output_dir)
+# }
+# 
+# # List all input files
+# counts_files <- list.files(path = counts_dir, pattern = "^Global_2024_.*_shotgunmetagenomics\\.csv$", full.names = TRUE)
+# metadata_files <- list.files(path = metadata_dir, pattern = "^Global2024_.*_metadata\\.csv$", full.names = TRUE)
+# 
+# # Define hyperparameter values
+# abundance_thresholds <- c(0, 0.001, 0.002, 0.003)  # 0%, 0.1%, 0.2%, 0.3%
+# prevalence_thresholds <- c(0, 0.1, 0.2, 0.3)  # 0%, 10%, 20%, 30%
+# 
+# # Initialize list to store all results
+# results_list <- list()
+# 
+# # Function to preprocess data
+# preprocess_data <- function(data, abundance_threshold, prevalence_threshold) {
+#     # Remove rows and columns that sum to 0
+#     data <- data[rowSums(data) > 0, ]
+#     data <- data[, colSums(data) > 0]
+# 
+#     # Calculate average abundance and prevalence for each feature (column)
+#     avg_abundance <- colMeans(data)  # Average abundance
+#     prevalence <- colSums(data > 0) / nrow(data)  # Prevalence percentage
+# 
+#     # Filter based on thresholds
+#     data <- data[, avg_abundance >= abundance_threshold & prevalence >= prevalence_threshold]
+# 
+#     return(data)
+# }
+# 
+# # Process each dataset
+# for (file in counts_files) {
+#     # Extract dataset name from filename
+#     dataset_name <- sub("^Global_2024_(.*)_shotgunmetagenomics\\.csv$", "\\1", basename(file))
+# 
+#     # Read the relative abundance data
+#     raw_data <- read.csv(file, row.names = 1)
+# 
+#     # Find the corresponding metadata file
+#     metadata_file <- metadata_files[grepl(paste0(dataset_name, "_metadata"), metadata_files)]
+# 
+#     if (length(metadata_file) == 1) {
+#         metadata <- read.csv(metadata_file, row.names = 1)  # Load metadata
+#     } else {
+#         metadata <- NULL  # No metadata found
+#     }
+# 
+#     # Initialize a list for this dataset
+#     dataset_results <- list(
+#         Relative_Abundance = raw_data,  # Store raw relative abundance data
+#         Metadata = metadata  # Store metadata (NULL if not found)
+#     )
+# 
+#     # Iterate over abundance and prevalence thresholds
+#     for (abundance_threshold in abundance_thresholds) {
+#         for (prevalence_threshold in prevalence_thresholds) {
+#             # Preprocess data
+#             filtered_data <- preprocess_data(raw_data, abundance_threshold, prevalence_threshold)
+# 
+#             # Run MLP predictions
+#             prediction_galaxy <- MLP(filtered_data, taxatype, "galaxy", "load")
+#             prediction_galaxy$load <- log10(prediction_galaxy$load)
+# 
+#             prediction_metacardis <- MLP(filtered_data, taxatype, "metacardis", "load")
+#             prediction_metacardis$load <- log10(prediction_metacardis$load)
+# 
+#             # Store results
+#             param_key <- paste0("Abun", abundance_threshold, "_Prev", prevalence_threshold)
+#             dataset_results[[param_key]] <- list(
+#                 Galaxy = prediction_galaxy,
+#                 MetaCardis = prediction_metacardis
+#             )
+#         }
+#     }
+# 
+#     # Store everything for this dataset
+#     results_list[[dataset_name]] <- dataset_results
+# 
+#     message("✅ Processed dataset: ", dataset_name)
+# }
+# 
+# # Save all results as an RDS file
+# rds_file <- file.path(output_dir, "MLP_predictions_with_metadata.rds")
+# saveRDS(results_list, rds_file)
+# 
+# message("📁 All predictions and metadata saved in: ", rds_file)
+# 
+
+#############
+
+# 
+# # Function to select highly variable columns
+# select_high_variance <- function(relabun_df, top_n = 10) {
+#   variance <- apply(relabun_df, 2, sd) / colMeans(relabun_df)  # Coefficient of variation
+#   high_var_taxa <- names(sort(variance, decreasing = TRUE)[1:top_n])
+#   return(high_var_taxa)
+# }
+# 
+# # Function to generate NMDS and overlay loads
+# plot_nmds <- function(relabun_df, measured_load_df, predicted_load_df = NULL, 
+#                       galaxypredicted_load_df = NULL, metcardispredicted_load_df = NULL, 
+#                       sequencingtype = "16S") {
+#   
+#   # Select highly variant taxa
+#   selected_taxa <- select_high_variance(relabun_df)
+#   relabun_subset <- relabun_df[, selected_taxa]
+# 
+#   # Run NMDS
+#   nmds <- metaMDS(relabun_subset, distance = "bray", k = 2, trymax = 100)
+#   
+#   # Extract NMDS scores
+#   nmds_df <- as.data.frame(nmds$points)
+#   nmds_df$SampleID <- rownames(nmds_df)
+# 
+#   # Merge NMDS data with measured and predicted loads
+#   merged_df <- measured_load_df %>%
+#     inner_join(nmds_df, by = "SampleID")
+#   
+#   # Add predicted load if applicable
+#   if (sequencingtype == "16S") {
+#     merged_df <- merged_df %>%
+#       inner_join(predicted_load_df, by = "SampleID")
+#   } else if (sequencingtype == "shotgun metagenomics") {
+#     merged_df <- merged_df %>%
+#       inner_join(galaxypredicted_load_df, by = "SampleID") %>%
+#       inner_join(metcardispredicted_load_df, by = "SampleID")
+#   }
+#   
+#   # Extract vectors for taxa contributions
+#   species_vectors <- scores(nmds, display = "species")
+#   species_df <- as.data.frame(species_vectors)
+#   species_df$Taxa <- rownames(species_df)
+#   
+#   # Plot NMDS with vectors and load overlay
+#   p <- ggplot(merged_df, aes(x = MDS1, y = MDS2)) +
+#     geom_point(aes(color = MeasuredLoad, size = MeasuredLoad)) +
+#     scale_color_viridis_c() +
+#     geom_segment(data = species_df, aes(x = 0, y = 0, xend = MDS1, yend = MDS2), 
+#                  arrow = arrow(length = unit(0.2, "cm")), color = "black") +
+#     geom_text_repel(data = species_df, aes(x = MDS1, y = MDS2, label = Taxa), size = 5) +
+#     theme_minimal() +
+#     labs(title = "NMDS Plot with Load Overlay", 
+#          x = "NMDS1", y = "NMDS2", color = "Measured Load") 
+#   
+#   # Add predicted loads if available
+#   if (sequencingtype == "16S") {
+#     p <- p + geom_point(aes(shape = "PredictedLoad", color = PredictedLoad))
+#   } else if (sequencingtype == "shotgun metagenomics") {
+#     p <- p + geom_point(aes(shape = "GalaxyPredictedLoad", color = GalaxyPredictedLoad)) +
+#              geom_point(aes(shape = "MetacardisPredictedLoad", color = MetacardisPredictedLoad))
+#   }
+#   
+#   return(p)
+# }
+# 
+# nmds_plots <- list()
+# for (i in seq_along(studies)) {
+#   study <- studies[[i]]
+#   
+#   sequencingtype <- unique(datasets[datasets$dataset_name == study_name, "sequencingtype"])
+# 
+#   
+#   if (sequencingtype == "16S rRNA") {
+#     nmds_plots[[i]] <- plot_nmds(
+#       relabun_df = study$relabun_df,
+#       measured_load_df = study$measured_load_df,
+#       predicted_load_df = study$predicted_load_df,
+#       sequencingtype = sequencingtype
+#     )
+#   } else if (sequencingtype == "shotgun metagenomics") {
+#     nmds_plots[[i]] <- plot_nmds(
+#       relabun_df = study$relabun_df,
+#       measured_load_df = study$measured_load_df,
+#       galaxypredicted_load_df = study$galaxypredicted_load_df,
+#       metcardispredicted_load_df = study$metcardispredicted_load_df,
+#       sequencingtype = sequencingtype
+#     )
+#   }
+# }
+# 
+# # Display plots
+# nmds_plots
+
+# 
+# 
+# library(pheatmap)
+# pheatmap(est_median[2:6, ], cluster_rows = TRUE, cluster_cols = TRUE)
+
+```
