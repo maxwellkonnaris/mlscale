@@ -43,6 +43,6 @@ Clone this repository:
 If you use this code or data (and more specifically the mutt repository), please cite:
 
 > Konnaris, MA *et al.*  
-> **Uncertainty Modeling Outperforms Machine Learning for Microbiome Data Analysis.**  
+> **Modeling Scale Uncertainty Improves Robustness of Microbiome Inference.**  
 > Preprint: [PubMed: 41000811](https://pubmed.ncbi.nlm.nih.gov/41000811/)
 
