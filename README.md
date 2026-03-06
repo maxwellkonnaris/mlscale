@@ -1,4 +1,4 @@
-# Analysis Code for *"Uncertainty Modeling Outperforms Machine Learning for Microbiome Data Analysis"*
+# Analysis Code for *"Modeling Scale Uncertainty Improves Robustness of Microbiome Inference"*
 
 **Manuscript Preprint:** [PubMed: 41000811](https://pubmed.ncbi.nlm.nih.gov/41000811/)  
 **Data Repository:** [Silverman-Lab/mutt](https://github.com/Silverman-Lab/mutt)
@@ -7,7 +7,7 @@
 
 ## Overview
 
-This repository contains the R analysis code, helper functions, and R Markdown workflows used in the manuscript *"Uncertainty Modeling Outperforms Machine Learning for Microbiome Data Analysis."*  
+This repository contains the R analysis code, helper functions, and R Markdown workflows used in the manuscript *"Modeling Scale Uncertainty Improves Robustness of Microbiome Inference."*  
 It supports the full analytical pipeline — from data preprocessing and model comparison to statistical uncertainty estimation — used to evaluate microbiome datasets under various compositional and technical noise assumptions. At this time (2025), this represents the largest analysis of scale methods (35 datasets) and the largest benchmark across differential abundance methods.
 
 ---
