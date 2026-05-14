@@ -43,6 +43,6 @@ Clone this repository:
 If you use this code or data (and more specifically the mutt repository), please cite:
 
 > Konnaris, MA *et al.*  
-> **Modeling Scale Uncertainty Improves Robustness of Microbiome Inference.**  
+> **Modeling Scale Uncertainty Improves Microbiome Analysis.**  
 > Preprint: [PubMed: 41000811](https://pubmed.ncbi.nlm.nih.gov/41000811/)
 
