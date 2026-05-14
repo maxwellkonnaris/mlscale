@@ -1,4 +1,4 @@
-# Analysis Code for *"Modeling Scale Uncertainty Improves Robustness of Microbiome Analysis"*
+# Analysis Code for *"Modeling Scale Uncertainty Improves Microbiome Analysis"*
 
 **Manuscript Preprint:** [PubMed: 41000811](https://pubmed.ncbi.nlm.nih.gov/41000811/)  
 **Data Repository:** [Silverman-Lab/mutt](https://github.com/Silverman-Lab/mutt)
